@@ -1,0 +1,6 @@
+---,templateID,displayName,charterTierHint,defaultCommonsZonePrimary,defaultCommonsZoneSecondary,bRequiresFlatTerrain,bRequiresHillock,bRequiresValleyAxis,radialSpokeCount,citadelEllipseAspect,citadelGateCount,harmonicBlockPresetRow,bAutoSnapBoulevardsToRegionalRoads,maxStretchSlopeDeg,bOuterRingStretchOnly,bBlueprintLayerStretchFree
+Squared,Squared,Squared (T1),Settlement to Town,CIV,SPD,true,false,false,0,0,0,,false,12,false,true
+Harmonic,Harmonic,Harmonic (T2),Village to City,CIV,SPD,true,false,false,0,0,0,Harmonic_Default,false,12,false,true
+Radial,Radial,Radial (T3),Town to City,CIV,SPD,true,false,false,12,0,0,,true,12,true,true
+Citadel,Citadel,Citadel (T4),Town+ military,CIV,SPD,false,true,false,0,1.618,4,,true,12,false,true
+Valley,Valley,Valley (T5),Pioneer to Town,CIV,SPD,false,false,true,0,0,0,,false,12,false,true

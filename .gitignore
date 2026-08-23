@@ -1,0 +1,48 @@
+﻿# Visual Studio / Rider
+.vs/
+*.sln
+*.suo
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+*.xcodeproj
+*.xcworkspace
+
+# Unreal
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+*.VC.db
+*.opensdf
+*.sdf
+*.sln
+*.suo
+*.xcodeproj
+*.xcworkspace
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local
+*.log
+
+# Vendor/marketplace content (re-downloadable from Fab/Epic, not original work - IH-DEC-040)
+/Content/ForestLandscape/
+/Content/MSPresets/
+/Content/MS_ForestFloorV1/
+/Content/MWLandscapeAutoMaterial/
+/Content/OWD_Plants_Pack/
+/Content/Rock_Collection_04/
+/Content/Ultimate_Rocks/
+/Content/UltraDynamicSky/
+/Content/Waterline/
+/Content/sA_Megapack_v1/
+/Content/watermaterials/
+/ForestLandscape.png
+/Source/*_Surface/
+/Source/*_Decal/
+/Source/megascansAsset.json
