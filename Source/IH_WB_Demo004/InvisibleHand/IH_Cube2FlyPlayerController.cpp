@@ -104,10 +104,6 @@ namespace IH_Cube2FlyPlayerControllerPrivate
 		{
 			return 0x4C;
 		}
-		if (Key == EKeys::K)
-		{
-			return 0x4B;
-		}
 		if (Key == EKeys::G)
 		{
 			return 0x47;
@@ -1130,24 +1126,6 @@ void AIH_Cube2FlyPlayerController::HandlePauseTogglePressed()
 	}
 }
 
-void AIH_Cube2FlyPlayerController::HandleGameDateTimeTogglePressed()
-{
-	if (GameDateTimeWidget)
-	{
-		GameDateTimeWidget->TogglePanelVisible();
-	}
-}
-
-void AIH_Cube2FlyPlayerController::TryGameDateTimeToggleFromTick()
-{
-	const bool bKeyDown = IsKeyDownAnywhere(EKeys::K);
-	if (bKeyDown && !bPrevGameDateTimeKeyDown && !IsHUDSliderConsumingKeyboard())
-	{
-		HandleGameDateTimeTogglePressed();
-	}
-	bPrevGameDateTimeKeyDown = bKeyDown;
-}
-
 void AIH_Cube2FlyPlayerController::HandleMinimapTogglePressed()
 {
 	UE_LOG(LogTemp, Warning, TEXT("HandleMinimapTogglePressed (PC=%s)"), *GetName());
@@ -1496,7 +1474,6 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 	TryBuildPaletteTabKeysFromTick();
 	TryMinimapCloseFromTick();
 	TryPauseToggleFromTick();
-	TryGameDateTimeToggleFromTick();
 
 	if (KeyboardFocusWarmupTicksRemaining > 0 && !bMouseLookActive && !IsHUDSliderConsumingKeyboard())
 	{

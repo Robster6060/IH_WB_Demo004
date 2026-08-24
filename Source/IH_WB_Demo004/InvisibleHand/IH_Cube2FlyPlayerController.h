@@ -83,9 +83,6 @@ protected:
 	UFUNCTION()
 	void HandlePauseTogglePressed();
 
-	UFUNCTION()
-	void HandleGameDateTimeTogglePressed();
-
 private:
 	void BindFlyMovementKeys();
 	void BindNavDebugToggleKeys();
@@ -97,7 +94,6 @@ private:
 	void TickBuildPaletteAndTownGrid(float DeltaTime);
 	void TryMinimapCloseFromTick();
 	void TryPauseToggleFromTick();
-	void TryGameDateTimeToggleFromTick();
 	void ApplyKeyboardFlyMovement(float DeltaTime);
 	void ApplyFreeMouseViewportSettings();
 	void ApplyPresentationInputMode();
@@ -155,7 +151,6 @@ private:
 	bool bPrevBuildPaletteTabKeyDown[5] = {};
 	bool bPrevMinimapCloseKeyDown = false;
 	bool bPrevPauseKeyDown = false;
-	bool bPrevGameDateTimeKeyDown = false;
 	int32 KeyboardFocusWarmupTicksRemaining = 0;
 	int32 MouseCaptureWarmupTicksRemaining = 0;
 	TSet<FKey> PressedFlyKeys;

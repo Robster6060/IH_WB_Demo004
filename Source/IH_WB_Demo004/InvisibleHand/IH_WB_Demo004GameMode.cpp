@@ -470,13 +470,28 @@ void AIH_WB_Demo004GameMode::EnsureMinimalWorldForBlankMap()
 
 namespace
 {
-	/** UDS Blueprint vars have no compile-time C++ type — set by exact reflected property name. */
+	/** UDS Blueprint vars have no compile-time C++ type — set by exact reflected property name.
+	 * DIAGNOSED root cause of the "Bottom Altitude" silent-failure bug (headless Python probe
+	 * confirmed the property genuinely exists and round-trips fine via set_editor_property, while
+	 * our FFloatProperty-only cast returned nullptr): UE5 Blueprint "Float" variables commonly
+	 * compile to FDoubleProperty, not FFloatProperty, under Large World Coordinates — a real,
+	 * well-known UE5 behavior change from UE4, not project-specific. Every UDS property this
+	 * codebase writes/reads as a float goes through this one helper, so this fix is not scoped to
+	 * Bottom Altitude alone — it silently repairs any other property (e.g. North Yaw, Latitude)
+	 * that may have been failing the same way without ever being diagnosed, since a failed write
+	 * here previously looked identical to a successful no-op. */
 	static bool SetUdsFloatProperty(AActor* Actor, const TCHAR* PropertyName, float Value)
 	{
 		if (!Actor) { return false; }
-		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		FProperty* Prop = Actor->GetClass()->FindPropertyByName(FName(PropertyName));
+		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop))
 		{
 			FloatProp->SetPropertyValue_InContainer(Actor, Value);
+			return true;
+		}
+		if (FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Prop))
+		{
+			DoubleProp->SetPropertyValue_InContainer(Actor, static_cast<double>(Value));
 			return true;
 		}
 		return false;
@@ -485,9 +500,14 @@ namespace
 	static float GetUdsFloatProperty(AActor* Actor, const TCHAR* PropertyName, float Fallback)
 	{
 		if (!Actor) { return Fallback; }
-		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		FProperty* Prop = Actor->GetClass()->FindPropertyByName(FName(PropertyName));
+		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop))
 		{
 			return FloatProp->GetPropertyValue_InContainer(Actor);
+		}
+		if (FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Prop))
+		{
+			return static_cast<float>(DoubleProp->GetPropertyValue_InContainer(Actor));
 		}
 		return Fallback;
 	}
