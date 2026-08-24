@@ -4,6 +4,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "IHCalendarTypes.h"
 
 namespace IHInvisibleHandSpec
 {
@@ -1575,6 +1576,105 @@ namespace IHInvisibleHandSpec
 	 */
 	static constexpr bool bDevDemo_HideOceanWaterActors = false;
 
+	// --- Gate 0 (IH-DEC-040): Ultra Dynamic Sky replaces hardcoded ADirectionalLight ---
+
+	/**
+	 * TRUE: StartPlay spawns Ultra_Dynamic_Sky_C + Ultra_Dynamic_Weather_C (Content-only
+	 * Blueprint pack, no native C++ type) instead of the retired ADirectionalLight +
+	 * TankSunIntensityPie/GrabContrast system. Do No Harm: does not touch
+	 * AIH_P1C12_OceanPlane, bWBUnlockProductionCanonicalAcres, or Sea Floor/WWF/Gold
+	 * Coastline constants (Content/InvisibleHand/UI/IH_UltimateSky_Enablement.md).
+	 */
+	static constexpr bool bGate0UseUltraDynamicSky = true;
+
+	inline bool IsGate0UltraDynamicSkyEnabled()
+	{
+		return bGate0UseUltraDynamicSky;
+	}
+
+	inline const TCHAR* GetUdsSkyBlueprintClassPath()
+	{
+		return TEXT("/Game/UltraDynamicSky/Blueprints/Ultra_Dynamic_Sky.Ultra_Dynamic_Sky_C");
+	}
+	inline const TCHAR* GetUdsWeatherBlueprintClassPath()
+	{
+		return TEXT("/Game/UltraDynamicSky/Blueprints/Ultra_Dynamic_Weather.Ultra_Dynamic_Weather_C");
+	}
+
+	/**
+	 * CORRECTION (was wrongly assumed minutes-past-midnight 0-1440 all session): UDS's real "Time
+	 * of Day" scale is HHMM, 0-2400 (confirmed via headless probe: calling UDS's own "Set Time of
+	 * Day With String" with "18:00" produces 1800.0, "06:00" produces 600.0 — official UDS docs
+	 * independently confirm "Get Time of Day" also "outputs ... from 0-2400"). Rather than compute
+	 * that scale by hand and risk another silent mis-scale, this now returns a plain HH:MM string
+	 * per EIHTimeBracket (InvisibleHand_CalendarSystem.md §7) for GameMode to pass directly into
+	 * UDS's own "Set Time of Day With String" function, letting UDS do the parsing/scaling itself.
+	 * Honors the doc's note that Nightfall-to-Midnight is intentionally compressed.
+	 */
+	inline FString GetTimeBracketTimeString(EIHTimeBracket Bracket)
+	{
+		static const TCHAR* Times[10] = {
+			TEXT("00:00"), TEXT("05:00"), TEXT("06:00"), TEXT("09:00"), TEXT("12:00"),
+			TEXT("15:00"), TEXT("17:30"), TEXT("18:00"), TEXT("19:30"), TEXT("22:00")
+		};
+		const int32 Index = static_cast<int32>(Bracket);
+		return Times[FMath::Clamp(Index, 0, 9)];
+	}
+
+	/**
+	 * IH's own deliberate 30-day lunar cycle (InvisibleHand_CalendarSystem.md §5) — "not the
+	 * natural approximately 29.5-day astronomical cycle." A simple lookup, same every month
+	 * (user-confirmed), NOT UDS's Simulate Real Moon (which would compute the real ~29.5-day cycle
+	 * and directly contradict this canonical rule). Day-of-month maps linearly onto UDS's real
+	 * "Moon Phase" property (confirmed 0-1 cycle position: 0=New, 0.5=Full, 1=New again, with the
+	 * renderer deriving the crescent/gibbous shape itself — not a pre-baked illumination percent).
+	 * Day 1 -> 0.0 (New), Day 15 -> ~0.5 (Full, the canonical doc's 100% illumination day), Day 30
+	 * -> 1.0 (New again, the canonical doc's "Second New Moon"). Day 15 lands at 14/29≈0.483 rather
+	 * than exactly 0.5 — the 30-day table can't hit both New-Moon endpoints AND the exact midpoint
+	 * with pure linear spacing; the ~1.7% offset is visually negligible.
+	 */
+	inline float GetMoonPhaseValue(int32 Day)
+	{
+		const int32 Clamped = FMath::Clamp(Day, 1, 30);
+		return static_cast<float>(Clamped - 1) / 29.f;
+	}
+
+	/**
+	 * UDS ships 13 stock Weather Presets (UDS_Weather_Settings_C PrimaryDataAssets) under this
+	 * folder — confirmed via headless probe. "Change Weather" on the Weather actor takes a loaded
+	 * instance of one of these directly (ObjectProperty, not a class reference).
+	 */
+	inline const TCHAR* GetUdsWeatherPresetsFolder()
+	{
+		return TEXT("/Game/UltraDynamicSky/Blueprints/Weather_Effects/Weather_Presets/");
+	}
+	inline const TArray<FString>& GetUdsWeatherPresetNames()
+	{
+		static const TArray<FString> Names = {
+			TEXT("Clear_Skies"), TEXT("Partly_Cloudy"), TEXT("Cloudy"), TEXT("Overcast"), TEXT("Foggy"),
+			TEXT("Rain_Light"), TEXT("Rain"), TEXT("Rain_Thunderstorm"),
+			TEXT("Snow_Light"), TEXT("Snow"), TEXT("Snow_Blizzard"),
+			TEXT("Sand_Dust_Calm"), TEXT("Sand_Dust_Storm")
+		};
+		return Names;
+	}
+
+	/**
+	 * Real-degree Latitude input for UDS's Simulate Real Sun/Stars, per EIHRealmLatitude. Reuses
+	 * this project's own already-established canonical reference values (found in the Biome
+	 * DataTable header "Nordic70N,Temperate45N,Tropical25N" — DataTable_Column_Header_Validation
+	 * _Report.md), rather than inventing new numbers for the same three latitude bands.
+	 */
+	inline float GetRealmLatitudeDegrees(EIHRealmLatitude Latitude)
+	{
+		switch (Latitude)
+		{
+		case EIHRealmLatitude::Nordic: return 70.f;
+		case EIHRealmLatitude::Tropical: return 25.f;
+		default: return 45.f; // Temperate
+		}
+	}
+
 #if !UE_BUILD_SHIPPING
 	/** Implemented in IHDevViewRuntime.cpp — PIE HUD may override compile defaults. */
 	bool DevView_IsHideOceanEnabled();
@@ -2577,9 +2677,6 @@ namespace IHInvisibleHandSpec
 	static constexpr float TopographyMinAmbient = 0.42f;
 	/** WB DEV GrabContrast ON: albedo multiply (vs washout from sun+bright TOPO). */
 	static constexpr float TopographyGrabContrastAlbedoScale = 0.72f;
-	/** TankSun Intensity — pie default (bright) vs GrabContrast (UE outdoor ~3–8). */
-	static constexpr float TankSunIntensityPie = 12.f;
-	static constexpr float TankSunIntensityGrabContrast = 5.5f;
 	/** Slope steepness (1-|N·Up|) where rock weight begins / saturates. */
 	static constexpr float TopographySlopeRockStart = 0.15f;
 	static constexpr float TopographySlopeRockFull = 0.48f;

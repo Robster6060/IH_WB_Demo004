@@ -14,7 +14,9 @@ class UIH_P1C08_DevViewWidget;
 class UIH_P1C08_CameraAslWidget;
 class UIH_P1C08_PlaceShipWidget;
 class UIH_P1C08_TopDownViewWidget;
-class UIH_P1C08_SunPositionWidget;
+class UIH_P1C08_WeatherPreviewWidget;
+class UIH_P1C08_GameDateTimeWidget;
+class UIH_P1C08_PlayAtmosphericsWidget;
 class UIH_P1C08_DevSeedPanelWidget;
 class UIH_P1C08_TemplateGalleryWidget;
 class UIH_P1C08_IslandNavWidget;
@@ -82,7 +84,7 @@ protected:
 	void HandlePauseTogglePressed();
 
 	UFUNCTION()
-	void HandleSunPositionTogglePressed();
+	void HandleGameDateTimeTogglePressed();
 
 private:
 	void BindFlyMovementKeys();
@@ -95,7 +97,7 @@ private:
 	void TickBuildPaletteAndTownGrid(float DeltaTime);
 	void TryMinimapCloseFromTick();
 	void TryPauseToggleFromTick();
-	void TrySunPositionToggleFromTick();
+	void TryGameDateTimeToggleFromTick();
 	void ApplyKeyboardFlyMovement(float DeltaTime);
 	void ApplyFreeMouseViewportSettings();
 	void ApplyPresentationInputMode();
@@ -153,7 +155,7 @@ private:
 	bool bPrevBuildPaletteTabKeyDown[5] = {};
 	bool bPrevMinimapCloseKeyDown = false;
 	bool bPrevPauseKeyDown = false;
-	bool bPrevSunPositionKeyDown = false;
+	bool bPrevGameDateTimeKeyDown = false;
 	int32 KeyboardFocusWarmupTicksRemaining = 0;
 	int32 MouseCaptureWarmupTicksRemaining = 0;
 	TSet<FKey> PressedFlyKeys;
@@ -180,7 +182,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UIH_P1C08_CameraAslWidget> CameraAslWidget;
-	TObjectPtr<UIH_P1C08_SunPositionWidget> SunPositionWidget;
+	TObjectPtr<UIH_P1C08_WeatherPreviewWidget> WeatherPreviewWidget;
+	TObjectPtr<UIH_P1C08_GameDateTimeWidget> GameDateTimeWidget;
+	TObjectPtr<UIH_P1C08_PlayAtmosphericsWidget> PlayAtmosphericsWidget;
 	TObjectPtr<UIH_P1C08_DevSeedPanelWidget> DevSeedPanelWidget;
 	TObjectPtr<UIH_P1C08_TemplateGalleryWidget> TemplateGalleryWidget;
 	TObjectPtr<UIH_P1C08_IslandNavWidget> IslandNavWidget;

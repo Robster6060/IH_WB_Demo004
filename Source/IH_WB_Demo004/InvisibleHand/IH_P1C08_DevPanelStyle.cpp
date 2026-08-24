@@ -44,8 +44,9 @@ float IH_P1C08_DevPanelStyle::GetStandardStackContentHeight(EStackSlot Slot, int
 		return 118.f;
 	case EStackSlot::CoastlineTuning:
 		return CoastlineTuningCollapsedHeight;
-	case EStackSlot::SunPosition:
-		return 132.f;
+	case EStackSlot::WeatherPreview:
+		// Title + Preset dropdown row + Hour dropdown row + Resume Random button.
+		return 210.f;
 	default:
 		return 80.f;
 	}
@@ -69,6 +70,21 @@ void IH_P1C08_DevPanelStyle::ApplyTopLeftPanelSlotAtY(
 	Slot->SetPosition(FVector2D(LeftMargin, TopY));
 	Slot->SetAutoSize(false);
 	Slot->SetSize(FVector2D(PanelWidth, ContentHeight));
+}
+
+void IH_P1C08_DevPanelStyle::ApplyTopCenterPanelSlot(
+	UCanvasPanelSlot* Slot, float TopY, float ContentWidth, float AlignmentX)
+{
+	if (!Slot)
+	{
+		return;
+	}
+
+	Slot->SetAnchors(FAnchors(0.5f, 0.f, 0.5f, 0.f));
+	Slot->SetAlignment(FVector2D(AlignmentX, 0.f));
+	Slot->SetPosition(FVector2D(0.f, TopY));
+	Slot->SetAutoSize(true);
+	(void)ContentWidth;
 }
 
 void IH_P1C08_DevPanelStyle::ConfigureTopLeftPanelSlot(

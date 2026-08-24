@@ -23,7 +23,9 @@
 #include "IH_P1C08_PlaceShipWidget.h"
 #include "IH_P1C08_TopDownViewWidget.h"
 #include "IH_P1C07_MerchantmanShipActor.h"
-#include "IH_P1C08_SunPositionWidget.h"
+#include "IH_P1C08_WeatherPreviewWidget.h"
+#include "IH_P1C08_GameDateTimeWidget.h"
+#include "IH_P1C08_PlayAtmosphericsWidget.h"
 #include "IH_P1C08_DevSeedPanelWidget.h"
 #include "IH_P1C08_TemplateGalleryWidget.h"
 #include "IH_P1C08_IslandNavWidget.h"
@@ -101,6 +103,10 @@ namespace IH_Cube2FlyPlayerControllerPrivate
 		if (Key == EKeys::L)
 		{
 			return 0x4C;
+		}
+		if (Key == EKeys::K)
+		{
+			return 0x4B;
 		}
 		if (Key == EKeys::G)
 		{
@@ -249,13 +255,30 @@ void AIH_Cube2FlyPlayerController::BeginPlay()
 		AslWidget->AddToViewport(4);
 		CameraAslWidget = AslWidget;
 	}
-	if (UIH_P1C08_SunPositionWidget* SunWidget =
-			CreateWidget<UIH_P1C08_SunPositionWidget>(this, UIH_P1C08_SunPositionWidget::StaticClass()))
+	if (UIH_P1C08_WeatherPreviewWidget* WeatherWidget =
+			CreateWidget<UIH_P1C08_WeatherPreviewWidget>(this, UIH_P1C08_WeatherPreviewWidget::StaticClass()))
 	{
-		SunWidget->SetIsFocusable(false);
-		SunWidget->AddToViewport(4);
-		SunWidget->SetPanelVisible(true);
-		SunPositionWidget = SunWidget;
+		WeatherWidget->SetIsFocusable(false);
+		WeatherWidget->AddToViewport(4);
+		WeatherWidget->SetPanelVisible(true);
+		WeatherPreviewWidget = WeatherWidget;
+	}
+	if (UIH_P1C08_GameDateTimeWidget* DateTimeWidget =
+			CreateWidget<UIH_P1C08_GameDateTimeWidget>(this, UIH_P1C08_GameDateTimeWidget::StaticClass()))
+	{
+		DateTimeWidget->SetIsFocusable(false);
+		DateTimeWidget->AddToViewport(4);
+		DateTimeWidget->SetPanelVisible(true);
+		GameDateTimeWidget = DateTimeWidget;
+	}
+	if (UIH_P1C08_PlayAtmosphericsWidget* AtmosphericsWidget =
+			CreateWidget<UIH_P1C08_PlayAtmosphericsWidget>(this, UIH_P1C08_PlayAtmosphericsWidget::StaticClass()))
+	{
+		AtmosphericsWidget->SetIsFocusable(false);
+		AtmosphericsWidget->AddToViewport(4);
+		AtmosphericsWidget->SetPanelVisible(true);
+		AtmosphericsWidget->SetDateWidget(GameDateTimeWidget);
+		PlayAtmosphericsWidget = AtmosphericsWidget;
 	}
 	if (UWorld* World = GetWorld())
 	{
@@ -427,11 +450,19 @@ void AIH_Cube2FlyPlayerController::RefreshDevPanelStackLayout()
 		StackY += ContentHeight + IH_P1C08_DevPanelStyle::PanelSpacing;
 	}
 
-	if (SunPositionWidget && SunPositionWidget->IsPanelVisible())
+	if (WeatherPreviewWidget && WeatherPreviewWidget->IsPanelVisible())
 	{
 		const float ContentHeight = IH_P1C08_DevPanelStyle::GetStandardStackContentHeight(
-			IH_P1C08_DevPanelStyle::EStackSlot::SunPosition, IslandCount);
-		SunPositionWidget->ApplyDevPanelStackPosition(StackY, ContentHeight);
+			IH_P1C08_DevPanelStyle::EStackSlot::WeatherPreview, IslandCount);
+		WeatherPreviewWidget->ApplyDevPanelStackPosition(StackY, ContentHeight);
+	}
+	if (GameDateTimeWidget && GameDateTimeWidget->IsPanelVisible())
+	{
+		GameDateTimeWidget->UpdatePanelLayout();
+	}
+	if (PlayAtmosphericsWidget && PlayAtmosphericsWidget->IsPanelVisible())
+	{
+		PlayAtmosphericsWidget->UpdatePanelLayout();
 	}
 }
 
@@ -1099,22 +1130,22 @@ void AIH_Cube2FlyPlayerController::HandlePauseTogglePressed()
 	}
 }
 
-void AIH_Cube2FlyPlayerController::HandleSunPositionTogglePressed()
+void AIH_Cube2FlyPlayerController::HandleGameDateTimeTogglePressed()
 {
-	if (SunPositionWidget)
+	if (GameDateTimeWidget)
 	{
-		SunPositionWidget->TogglePanelVisible();
+		GameDateTimeWidget->TogglePanelVisible();
 	}
 }
 
-void AIH_Cube2FlyPlayerController::TrySunPositionToggleFromTick()
+void AIH_Cube2FlyPlayerController::TryGameDateTimeToggleFromTick()
 {
-	const bool bSunKeyDown = IsKeyDownAnywhere(EKeys::L);
-	if (bSunKeyDown && !bPrevSunPositionKeyDown && !IsHUDSliderConsumingKeyboard())
+	const bool bKeyDown = IsKeyDownAnywhere(EKeys::K);
+	if (bKeyDown && !bPrevGameDateTimeKeyDown && !IsHUDSliderConsumingKeyboard())
 	{
-		HandleSunPositionTogglePressed();
+		HandleGameDateTimeTogglePressed();
 	}
-	bPrevSunPositionKeyDown = bSunKeyDown;
+	bPrevGameDateTimeKeyDown = bKeyDown;
 }
 
 void AIH_Cube2FlyPlayerController::HandleMinimapTogglePressed()
@@ -1294,11 +1325,6 @@ bool AIH_Cube2FlyPlayerController::IsHUDSliderConsumingKeyboard() const
 	{
 		return true;
 	}
-	if (SunPositionWidget && SunPositionWidget->IsPanelVisible()
-		&& (SunPositionWidget->IsSliderCapturingInput() || SunPositionWidget->IsKeyboardFocusActive()))
-	{
-		return true;
-	}
 	if (DevSeedPanelWidget && DevSeedPanelWidget->IsConsumingKeyboard())
 	{
 		return true;
@@ -1315,10 +1341,6 @@ void AIH_Cube2FlyPlayerController::TickHUDSliderKeyboardFocus(float DeltaTime)
 	else if (GameSpeedWidget && GameSpeedWidget->IsKeyboardFocusActive())
 	{
 		GameSpeedWidget->TickKeyboardFocusInput(this, DeltaTime);
-	}
-	else if (SunPositionWidget && SunPositionWidget->IsPanelVisible() && SunPositionWidget->IsKeyboardFocusActive())
-	{
-		SunPositionWidget->TickKeyboardFocusInput(this, DeltaTime);
 	}
 }
 
@@ -1371,13 +1393,6 @@ void AIH_Cube2FlyPlayerController::ProcessEarlyHUDPanelPointerDown(
 		return;
 	}
 
-
-	if (SunPositionWidget && SunPositionWidget->IsPanelVisible()
-		&& SunPositionWidget->TryActivateKeyboardFocusFromPanelClick(CursorAbsolute))
-	{
-		return;
-	}
-
 	// Dev seed panel (−/+, Sculpt, Random Realm) is handled in PlayerTick pointer-down only;
 	// routing it here too double-fired OnClicked and skipped island counts (3→5).
 
@@ -1393,10 +1408,6 @@ void AIH_Cube2FlyPlayerController::CancelActiveHUDKeyboardFocus()
 	if (GameSpeedWidget && GameSpeedWidget->IsKeyboardFocusActive())
 	{
 		GameSpeedWidget->CancelKeyboardFocus();
-	}
-	if (SunPositionWidget && SunPositionWidget->IsPanelVisible() && SunPositionWidget->IsKeyboardFocusActive())
-	{
-		SunPositionWidget->CancelKeyboardFocus();
 	}
 }
 
@@ -1440,10 +1451,6 @@ void AIH_Cube2FlyPlayerController::TickHUDSliderPointerMove(const FVector2D& Cur
 	{
 		GameSpeedWidget->HandleScreenPointerMove(CursorAbsolute);
 	}
-	else if (SunPositionWidget && SunPositionWidget->IsPanelVisible() && SunPositionWidget->IsSliderCapturingInput())
-	{
-		SunPositionWidget->HandleScreenPointerMove(CursorAbsolute);
-	}
 }
 
 void AIH_Cube2FlyPlayerController::FinishHUDSliderPointerUp(const FVector2D& CursorAbsolute)
@@ -1455,10 +1462,6 @@ void AIH_Cube2FlyPlayerController::FinishHUDSliderPointerUp(const FVector2D& Cur
 	else if (GameSpeedWidget && GameSpeedWidget->IsSliderCapturingInput())
 	{
 		GameSpeedWidget->HandleScreenPointerUp(CursorAbsolute);
-	}
-	else if (SunPositionWidget && SunPositionWidget->IsPanelVisible() && SunPositionWidget->IsSliderCapturingInput())
-	{
-		SunPositionWidget->HandleScreenPointerUp(CursorAbsolute);
 	}
 }
 
@@ -1493,7 +1496,7 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 	TryBuildPaletteTabKeysFromTick();
 	TryMinimapCloseFromTick();
 	TryPauseToggleFromTick();
-	TrySunPositionToggleFromTick();
+	TryGameDateTimeToggleFromTick();
 
 	if (KeyboardFocusWarmupTicksRemaining > 0 && !bMouseLookActive && !IsHUDSliderConsumingKeyboard())
 	{
@@ -1654,10 +1657,6 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 		else if (GameSpeedWidget && GameSpeedWidget->IsKeyboardFocusActive())
 		{
 			GameSpeedWidget->CancelKeyboardFocus();
-		}
-		else if (SunPositionWidget && SunPositionWidget->IsPanelVisible() && SunPositionWidget->IsKeyboardFocusActive())
-		{
-			SunPositionWidget->CancelKeyboardFocus();
 		}
 		else if (BuildPalette && BuildPalette->IsDragActive())
 		{
@@ -1930,10 +1929,6 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 				{
 					GameSpeedWidget->CancelKeyboardFocus();
 				}
-				if (SunPositionWidget && SunPositionWidget->IsKeyboardFocusActive())
-				{
-					SunPositionWidget->CancelKeyboardFocus();
-				}
 				bLeftMouseConsumedByHUDPanel = true;
 				bHUDSliderPointerCapture = CoastlineTuningWidget->IsSliderCapturingInput();
 				bConsumedBySliderPanel = true;
@@ -1977,10 +1972,6 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 				{
 					CoastlineTuningWidget->CancelKeyboardFocus();
 				}
-				if (SunPositionWidget && SunPositionWidget->IsKeyboardFocusActive())
-				{
-					SunPositionWidget->CancelKeyboardFocus();
-				}
 				bLeftMouseConsumedByHUDPanel = true;
 				bHUDSliderPointerCapture = GameSpeedWidget->IsSliderCapturingInput();
 				bConsumedBySliderPanel = true;
@@ -1992,19 +1983,18 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 				bConsumedBySliderPanel = true;
 			}
 #endif
-			else if (SunPositionWidget && SunPositionWidget->IsPanelVisible()
-				&& SunPositionWidget->HandleScreenPointerDown(CursorAbsolute))
+			else if (WeatherPreviewWidget && WeatherPreviewWidget->IsPanelVisible()
+				&& WeatherPreviewWidget->HandleScreenPointerDown(CursorAbsolute))
 			{
-				if (CoastlineTuningWidget && CoastlineTuningWidget->IsKeyboardFocusActive())
-				{
-					CoastlineTuningWidget->CancelKeyboardFocus();
-				}
-				if (GameSpeedWidget && GameSpeedWidget->IsKeyboardFocusActive())
-				{
-					GameSpeedWidget->CancelKeyboardFocus();
-				}
+				// No keyboard-focus/slider-capture machinery — native UComboBoxString/UButton
+				// handle their own click/keyboard, this just gates world-click for this frame.
 				bLeftMouseConsumedByHUDPanel = true;
-				bHUDSliderPointerCapture = SunPositionWidget->IsSliderCapturingInput();
+				bConsumedBySliderPanel = true;
+			}
+			else if (PlayAtmosphericsWidget && PlayAtmosphericsWidget->IsPanelVisible()
+				&& PlayAtmosphericsWidget->HandleScreenPointerDown(CursorAbsolute))
+			{
+				bLeftMouseConsumedByHUDPanel = true;
 				bConsumedBySliderPanel = true;
 			}
 			else if (TemplateGalleryWidget && TemplateGalleryWidget->HandleScreenPointerDown(CursorAbsolute))
@@ -4654,7 +4644,15 @@ bool AIH_Cube2FlyPlayerController::IsScreenPointOverInteractiveHUDPanel(const FV
 		return true;
 	}
 #endif
-	if (SunPositionWidget && SunPositionWidget->IsPanelVisible() && SunPositionWidget->IsScreenPointOverPanel(CursorAbsolute))
+	if (WeatherPreviewWidget && WeatherPreviewWidget->IsPanelVisible() && WeatherPreviewWidget->IsScreenPointOverPanel(CursorAbsolute))
+	{
+		return true;
+	}
+	if (GameDateTimeWidget && GameDateTimeWidget->IsPanelVisible() && GameDateTimeWidget->IsScreenPointOverPanel(CursorAbsolute))
+	{
+		return true;
+	}
+	if (PlayAtmosphericsWidget && PlayAtmosphericsWidget->IsPanelVisible() && PlayAtmosphericsWidget->IsScreenPointOverPanel(CursorAbsolute))
 	{
 		return true;
 	}

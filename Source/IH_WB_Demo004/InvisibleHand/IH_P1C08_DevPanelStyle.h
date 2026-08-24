@@ -73,7 +73,9 @@ namespace IH_P1C08_DevPanelStyle
 		CoastlineTuning = 3,
 		// Plan Addendum 20: Water Choppiness widget removed at user request (unused). Slot 4
 		// intentionally left retired rather than renumbered, so no other code needs to change.
-		SunPosition = 5,
+		// IH-DEC-040 follow-on: SunPosition (slider widget) retired, slot reused for its
+		// replacement, the Weather Preview DEV widget — same stack position, no renumbering.
+		WeatherPreview = 5,
 		Max
 	};
 
@@ -88,6 +90,15 @@ namespace IH_P1C08_DevPanelStyle
 		UCanvasPanelSlot* Slot, EStackSlot StackSlot, float ContentHeight, int32 IslandCount = 3);
 	IH_WB_DEMO004_API void ApplyTopLeftPanelSlotAtY(
 		UCanvasPanelSlot* Slot, float TopY, float ContentHeight);
+	/** IH-DEC-040 follow-on: top-center anchor for the Game Date|Time panel and its neighbor Play
+	 * Atmospherics panel — no prior top-center convention existed in this codebase (only top-left
+	 * stack / top-right cluster). ContentWidth is unused (AutoSize sizes from the widget's own
+	 * desired size) — kept for call-site clarity. AlignmentX lets two panels meet exactly at
+	 * screen-center regardless of either one's rendered width: pass 1.0 for a panel whose RIGHT
+	 * edge should sit at center (e.g. Date, so Play Atmospherics can sit immediately right of it),
+	 * 0.0 for a panel whose LEFT edge should sit at center, 0.5 (default) to self-center. */
+	IH_WB_DEMO004_API void ApplyTopCenterPanelSlot(
+		UCanvasPanelSlot* Slot, float TopY, float ContentWidth, float AlignmentX = 0.5f);
 	IH_WB_DEMO004_API void ApplyPanelBorderStyle(
 		UBorder* Border, float BackgroundAlpha = PanelBackgroundAlpha, bool bCompactPadding = false);
 	IH_WB_DEMO004_API void ApplyHUDLabelFont(UTextBlock* TextBlock, int32 Size = LabelFontSize);

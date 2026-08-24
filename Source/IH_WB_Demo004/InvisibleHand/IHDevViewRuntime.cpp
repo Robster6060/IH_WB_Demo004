@@ -7,9 +7,7 @@
 #include "IH_WB_Demo004.h"
 #include "IH_WB_Demo004GameMode.h"
 #include "IH_WB_IslandActor.h"
-#include "Components/DirectionalLightComponent.h"
 #include "Components/VolumetricCloudComponent.h"
-#include "Engine/DirectionalLight.h"
 #include "Engine/ExponentialHeightFog.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/StaticMeshActor.h"
@@ -121,10 +119,23 @@ namespace IHDevViewRuntime
 		const bool bShow = AreCloudsVisible();
 		int32 HiddenActors = 0;
 
+		// UDS's real volumetric clouds aren't a hideable actor — drive them via Cloud Coverage.
+		if (AIH_WB_Demo004GameMode* GM = World->GetAuthGameMode<AIH_WB_Demo004GameMode>())
+		{
+			GM->ApplyCloudsVisible(bShow);
+		}
+
 		for (TActorIterator<AActor> It(World); It; ++It)
 		{
 			AActor* Actor = *It;
 			if (!Actor) continue;
+
+			// Ultra Dynamic Sky/Weather (IH-DEC-040) own real VolumetricCloudComponents and manage
+			// their own cloud rendering — do not blanket hide/disable the whole actor for them.
+			if (Actor->GetClass()->GetPathName().Contains(TEXT("UltraDynamicSky"), ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
 
 			bool bIsCloudOrSkyNoise = false;
 			if (Actor->FindComponentByClass<UVolumetricCloudComponent>())
@@ -184,32 +195,15 @@ namespace IHDevViewRuntime
 	{
 		if (!World) return;
 		const bool bGrab = IsGrabContrastEnabled();
-		if (AIH_WB_Demo004GameMode* GM = World->GetAuthGameMode<AIH_WB_Demo004GameMode>())
-		{
-			GM->ApplyGrabContrastSunIntensity(bGrab);
-		}
-		else
-		{
-			for (TActorIterator<ADirectionalLight> It(World); It; ++It)
-			{
-				if (UDirectionalLightComponent* C = Cast<UDirectionalLightComponent>(It->GetLightComponent()))
-				{
-					C->SetIntensity(bGrab
-						? IHInvisibleHandSpec::TankSunIntensityGrabContrast
-						: IHInvisibleHandSpec::TankSunIntensityPie);
-				}
-				break;
-			}
-		}
+		// Sun-intensity toggle retired (IH-DEC-040): Ultra Dynamic Sky's own auto-exposure
+		// replaces the old TankSunIntensityPie/GrabContrast manual dimming. Material-side
+		// grab contrast on islands is unaffected.
 		for (TActorIterator<AIH_WB_IslandActor> It(World); It; ++It)
 		{
 			It->ApplyDevGrabContrastMaterials(bGrab);
 		}
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Phase DEV-WWF viewToggle grabContrast=%d sun=%.1f"),
-			bGrab ? 1 : 0,
-			bGrab ? IHInvisibleHandSpec::TankSunIntensityGrabContrast
-				  : IHInvisibleHandSpec::TankSunIntensityPie);
+			TEXT("Phase DEV-WWF viewToggle grabContrast=%d"), bGrab ? 1 : 0);
 	}
 #endif
 }

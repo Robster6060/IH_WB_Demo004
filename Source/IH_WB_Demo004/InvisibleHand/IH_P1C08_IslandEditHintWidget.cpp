@@ -54,8 +54,11 @@ void UIH_P1C08_IslandEditHintWidget::SetHintText(const FString& Text)
 
 void UIH_P1C08_IslandEditHintWidget::SetPieDevHint()
 {
+	// IH-DEC-040 follow-on: the old "Press L for Sun" hint referenced the retired
+	// SunPositionWidget's L-key toggle. Weather Preview (its replacement) is always visible now,
+	// no toggle key to hint at.
 	bPieDevHintActive = true;
-	PieDevHintText = TEXT("Press L for Sun");
+	PieDevHintText = TEXT("");
 	ApplyHintText(PieDevHintText);
 }
 

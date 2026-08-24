@@ -121,14 +121,32 @@ public:
 
 	void SetDevLandAreaFraction(float InFraction);
 
-	/** Normalized sun arc: 0 = sunrise, 0.5 = noon, 1 = sunset. */
-	UFUNCTION(BlueprintPure, Category = "P1C08|Sun")
-	float GetSunTimeOfDay() const { return SunTimeOfDay; }
+	/** Static, read-only-to-the-player calendar snapshot (IH-DEC-040 follow-on). No auto-advancing
+	 * clock this pass — the Game Date|Time HUD just reports whatever these fields currently hold. */
+	UFUNCTION(BlueprintPure, Category = "P1C08|Calendar")
+	int32 GetRealmYear() const { return RealmYear; }
+	UFUNCTION(BlueprintCallable, Category = "P1C08|Calendar")
+	void SetRealmYear(int32 InYear) { RealmYear = FMath::Clamp(InYear, 0, 9999); }
 
-	UFUNCTION(BlueprintCallable, Category = "P1C08|Sun")
-	void SetSunTimeOfDay(float InTime) { SunTimeOfDay = FMath::Clamp(InTime, 0.f, 1.f); }
+	UFUNCTION(BlueprintPure, Category = "P1C08|Calendar")
+	int32 GetRealmMonth() const { return RealmMonth; }
+	UFUNCTION(BlueprintCallable, Category = "P1C08|Calendar")
+	void SetRealmMonth(int32 InMonth) { RealmMonth = FMath::Clamp(InMonth, 1, 12); }
 
-	// Future: SunLatitudeDeg (hemispheric latitude) will modulate arc height/azimuth in GameMode sun rotation.
+	UFUNCTION(BlueprintPure, Category = "P1C08|Calendar")
+	int32 GetRealmDay() const { return RealmDay; }
+	UFUNCTION(BlueprintCallable, Category = "P1C08|Calendar")
+	void SetRealmDay(int32 InDay) { RealmDay = FMath::Clamp(InDay, 1, 30); }
+
+	UFUNCTION(BlueprintPure, Category = "P1C08|Calendar")
+	EIHTimeBracket GetRealmHourBracket() const { return RealmHourBracket; }
+	UFUNCTION(BlueprintCallable, Category = "P1C08|Calendar")
+	void SetRealmHourBracket(EIHTimeBracket InBracket) { RealmHourBracket = InBracket; }
+
+	UFUNCTION(BlueprintPure, Category = "P1C08|Calendar")
+	EIHRealmLatitude GetRealmLatitude() const { return RealmLatitude; }
+	UFUNCTION(BlueprintCallable, Category = "P1C08|Calendar")
+	void SetRealmLatitude(EIHRealmLatitude InLatitude) { RealmLatitude = InLatitude; }
 
 	UFUNCTION(BlueprintPure, Category = "P1C08|Seed")
 
@@ -208,8 +226,20 @@ protected:
 	UPROPERTY(EditAnywhere, Category = "P1C08|Seed", meta = (ClampMin = "0.05", ClampMax = "0.95"))
 	float TargetEffectiveLandFraction = IHInvisibleHandSpec::DefaultTargetEffectiveLandFraction;
 
-	UPROPERTY(EditAnywhere, Category = "P1C08|Sun", meta = (ClampMin = "0.0", ClampMax = "1.0"))
-	float SunTimeOfDay = 0.22f;
+	UPROPERTY(EditAnywhere, Category = "P1C08|Calendar", meta = (ClampMin = "0", ClampMax = "9999"))
+	int32 RealmYear = 1000;
+
+	UPROPERTY(EditAnywhere, Category = "P1C08|Calendar", meta = (ClampMin = "1", ClampMax = "12"))
+	int32 RealmMonth = 4;
+
+	UPROPERTY(EditAnywhere, Category = "P1C08|Calendar", meta = (ClampMin = "1", ClampMax = "30"))
+	int32 RealmDay = 1;
+
+	UPROPERTY(EditAnywhere, Category = "P1C08|Calendar")
+	EIHTimeBracket RealmHourBracket = EIHTimeBracket::Afternoon;
+
+	UPROPERTY(EditAnywhere, Category = "P1C08|Calendar")
+	EIHRealmLatitude RealmLatitude = EIHRealmLatitude::Temperate;
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "P1C09|Map Seed")
 	FIHMapSeedPhase1Result MapSeedPhase1;

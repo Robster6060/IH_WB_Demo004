@@ -24,7 +24,6 @@
 #include "IHDevViewRuntime.h"
 #include "IH_Cube2FlyPlayerController.h"
 #include "IH_Cube2FlyPawn.h"
-#include "Components/DirectionalLightComponent.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/FloatingPawnMovement.h"
 #include "Engine/DirectionalLight.h"
@@ -466,130 +465,570 @@ static FAutoConsoleCommand GCmdStampGalleryRefreshMeshes(
 
 void AIH_WB_Demo004GameMode::EnsureMinimalWorldForBlankMap()
 {
-	ConfigureTankSunLight();
+	ConfigureUltraDynamicSky();
 }
 
-FRotator AIH_WB_Demo004GameMode::ComputeSunRotation(float TimeOfDay, float LatitudeDeg)
+namespace
 {
-	const float T = FMath::Clamp(TimeOfDay, 0.f, 1.f);
-	constexpr float LowSunPitch = -8.f;
-	constexpr float NoonPitch = -80.f;
-	constexpr float SunriseYaw = 90.f;
-	constexpr float NoonYaw = 0.f;
-	constexpr float SunsetYaw = -90.f;
-
-	float Pitch;
-	float Yaw;
-	if (T <= 0.5f)
+	/** UDS Blueprint vars have no compile-time C++ type — set by exact reflected property name. */
+	static bool SetUdsFloatProperty(AActor* Actor, const TCHAR* PropertyName, float Value)
 	{
-		const float Alpha = T / 0.5f;
-		Pitch = FMath::Lerp(LowSunPitch, NoonPitch, Alpha);
-		Yaw = FMath::Lerp(SunriseYaw, NoonYaw, Alpha);
-	}
-	else
-	{
-		const float Alpha = (T - 0.5f) / 0.5f;
-		Pitch = FMath::Lerp(NoonPitch, LowSunPitch, Alpha);
-		Yaw = FMath::Lerp(NoonYaw, SunsetYaw, Alpha);
+		if (!Actor) { return false; }
+		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		{
+			FloatProp->SetPropertyValue_InContainer(Actor, Value);
+			return true;
+		}
+		return false;
 	}
 
-	// Future latitude hook: modulate Pitch/Yaw from LatitudeDeg (e.g. polar vs equatorial arc).
-	(void)LatitudeDeg;
-	return FRotator(Pitch, Yaw, 0.f);
+	static float GetUdsFloatProperty(AActor* Actor, const TCHAR* PropertyName, float Fallback)
+	{
+		if (!Actor) { return Fallback; }
+		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		{
+			return FloatProp->GetPropertyValue_InContainer(Actor);
+		}
+		return Fallback;
+	}
+
+	static bool SetUdsBoolProperty(AActor* Actor, const TCHAR* PropertyName, bool bValue)
+	{
+		if (!Actor) { return false; }
+		if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		{
+			BoolProp->SetPropertyValue_InContainer(Actor, bValue);
+			return true;
+		}
+		return false;
+	}
+
+	static bool SetUdsIntProperty(AActor* Actor, const TCHAR* PropertyName, int32 Value)
+	{
+		if (!Actor) { return false; }
+		if (FIntProperty* IntProp = CastField<FIntProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		{
+			IntProp->SetPropertyValue_InContainer(Actor, Value);
+			return true;
+		}
+		return false;
+	}
+
+	/** Blueprint enum vars may compile to FByteProperty (legacy) or FEnumProperty — handle both.
+	 * Raw values confirmed via headless Python probe: UDS_SeasonMode::MANUAL_SETTING=1,
+	 * UDS_RandomWeatherTiming::DAILY=2. */
+	static bool SetUdsByteEnumProperty(AActor* Actor, const TCHAR* PropertyName, uint8 Value)
+	{
+		if (!Actor) { return false; }
+		FProperty* Prop = Actor->GetClass()->FindPropertyByName(FName(PropertyName));
+		if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+		{
+			ByteProp->SetPropertyValue_InContainer(Actor, Value);
+			return true;
+		}
+		if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+		{
+			void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Actor);
+			EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
+			return true;
+		}
+		return false;
+	}
+
+	/** Readback counterpart to SetUdsByteEnumProperty, for diagnostics — DIAGNOSTIC used to
+	 * confirm whether "Random Weather Variation" actually holds the value we last wrote to it,
+	 * rather than guessing why Resume Random Weather appears inert. Returns -1 if not found. */
+	static int32 GetUdsByteEnumProperty(AActor* Actor, const TCHAR* PropertyName)
+	{
+		if (!Actor) { return -1; }
+		FProperty* Prop = Actor->GetClass()->FindPropertyByName(FName(PropertyName));
+		if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+		{
+			return static_cast<int32>(ByteProp->GetPropertyValue_InContainer(Actor));
+		}
+		if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+		{
+			const void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Actor);
+			return static_cast<int32>(EnumProp->GetUnderlyingProperty()->GetSignedIntPropertyValue(ValuePtr));
+		}
+		return -1;
+	}
+
+	/** Calls a UDS Blueprint function by exact reflected name (e.g. "Change to Random Weather
+	 * Variation"). Crash fix: ProcessEvent(Func, nullptr) is only safe when Func->ParmsSize==0 —
+	 * Blueprint functions commonly carry a hidden return-value property even when callable with
+	 * no input args (confirmed real via headless probe, which only checks required INPUT args),
+	 * and passing nullptr for a nonzero ParmsSize is a null-pointer write, crashing exactly this
+	 * way. Always allocate a real zeroed buffer sized to the function's actual parameter block.
+	 * DIAGNOSTIC: logs (at Warning, so it's cheap to grep) whenever FindFunction fails to resolve
+	 * the name at all — a silent no-op that previously looked identical to a successful call,
+	 * since the old version returned true only after a successful find, but callers never
+	 * inspected the bool. Surfacing this here removes "wrong function name" as a hidden cause
+	 * behind both Bottom Altitude and Resume Random Weather appearing inert. */
+	static bool CallUdsFunction(AActor* Actor, const TCHAR* FunctionName)
+	{
+		if (!Actor) { return false; }
+		UFunction* Func = Actor->FindFunction(FName(FunctionName));
+		if (!Func)
+		{
+			UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Gate 0 DIAG: CallUdsFunction could not find \"%s\" on %s"),
+				FunctionName, *Actor->GetName());
+			return false;
+		}
+		if (Func->ParmsSize > 0)
+		{
+			TArray<uint8> ParamBuffer;
+			ParamBuffer.AddZeroed(Func->ParmsSize);
+			Actor->ProcessEvent(Func, ParamBuffer.GetData());
+		}
+		else
+		{
+			Actor->ProcessEvent(Func, nullptr);
+		}
+		return true;
+	}
+
+	/** "Change Weather" takes one UObject* param (a loaded UDS_Weather_Settings_C preset asset
+	 * instance, NOT a class reference — confirmed via headless probe). Writes into a buffer sized
+	 * and offset from the function's own real parameter layout rather than assuming a hand-rolled
+	 * struct matches it exactly (same ParmsSize safety concern as CallUdsFunction above). */
+	static bool CallUdsChangeWeather(AActor* WeatherActor, UObject* PresetAsset)
+	{
+		if (!WeatherActor || !PresetAsset) { return false; }
+		UFunction* Func = WeatherActor->FindFunction(FName(TEXT("Change Weather")));
+		if (!Func) { return false; }
+
+		TArray<uint8> ParamBuffer;
+		ParamBuffer.AddZeroed(FMath::Max(static_cast<int32>(Func->ParmsSize), static_cast<int32>(sizeof(UObject*))));
+
+		FObjectProperty* ObjProp = CastField<FObjectProperty>(Func->FindPropertyByName(TEXT("New Weather Type")));
+		if (!ObjProp)
+		{
+			// Fall back to the first parameter property found, in case the exact name differs.
+			for (TFieldIterator<FProperty> It(Func); It; ++It)
+			{
+				if (FObjectProperty* Candidate = CastField<FObjectProperty>(*It))
+				{
+					ObjProp = Candidate;
+					break;
+				}
+			}
+		}
+		if (ObjProp)
+		{
+			ObjProp->SetObjectPropertyValue(ParamBuffer.GetData() + ObjProp->GetOffset_ForInternal(), PresetAsset);
+		}
+		else
+		{
+			*reinterpret_cast<UObject**>(ParamBuffer.GetData()) = PresetAsset;
+		}
+
+		WeatherActor->ProcessEvent(Func, ParamBuffer.GetData());
+		return true;
+	}
+
+	/** "Set Time of Day With String" takes a plain "HH:MM" string and does UDS's own parsing/
+	 * scaling — confirmed via headless probe ("18:00" -> Time of Day 1800.0, "06:00" -> 600.0),
+	 * avoiding the earlier wrong assumption that "Time of Day" was minutes-past-midnight when its
+	 * real scale is HHMM (0-2400). Same ParmsSize-safe buffer pattern as CallUdsChangeWeather. */
+	static bool CallUdsSetTimeOfDayWithString(AActor* SkyActor, const FString& TimeString)
+	{
+		if (!SkyActor) { return false; }
+		UFunction* Func = SkyActor->FindFunction(FName(TEXT("Set Time of Day With String")));
+		if (!Func) { return false; }
+
+		TArray<uint8> ParamBuffer;
+		ParamBuffer.AddZeroed(FMath::Max(static_cast<int32>(Func->ParmsSize), static_cast<int32>(sizeof(FString))));
+
+		FStrProperty* StrProp = nullptr;
+		for (TFieldIterator<FProperty> It(Func); It; ++It)
+		{
+			if (FStrProperty* Candidate = CastField<FStrProperty>(*It))
+			{
+				StrProp = Candidate;
+				break;
+			}
+		}
+		if (StrProp)
+		{
+			StrProp->SetPropertyValue(ParamBuffer.GetData() + StrProp->GetOffset_ForInternal(), TimeString);
+		}
+		else
+		{
+			new (ParamBuffer.GetData()) FString(TimeString);
+		}
+
+		SkyActor->ProcessEvent(Func, ParamBuffer.GetData());
+		return true;
+	}
+
+	/** Dec/Jan/Feb=Winter, Mar/Apr/May=Spring, Jun/Jul/Aug=Summer, Sep/Oct/Nov=Autumn — matches
+	 * the meteorological grouping in InvisibleHand_CalendarSystem.md §3 and UDS's own Season
+	 * convention (0=Spring, 1=Summer, 2=Autumn, 3=Winter — confirmed via official UDS docs). */
+	static float SeasonFloatFromMonth(int32 Month)
+	{
+		switch (Month)
+		{
+		case 12: case 1: case 2: return 3.f; // Winter
+		case 3: case 4: case 5: return 0.f;  // Spring
+		case 6: case 7: case 8: return 1.f;  // Summer
+		default: return 2.f;                 // Autumn
+		}
+	}
 }
 
-void AIH_WB_Demo004GameMode::ApplySunFromGameInstance()
+void AIH_WB_Demo004GameMode::ApplyCalendarFromGameInstance()
 {
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_Client)
 	{
 		return;
 	}
-
-	if (!TankSunLight)
-	{
-		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
-		{
-			TankSunLight = *It;
-			break;
-		}
-	}
-
-	if (!TankSunLight)
+	if (!TankSkyActor)
 	{
 		return;
 	}
 
 	const UIH_WB_Demo004GameInstance* GI = GetGameInstance<UIH_WB_Demo004GameInstance>();
-	const float TimeOfDay = GI ? GI->GetSunTimeOfDay() : 0.22f;
-	TankSunLight->SetActorRotation(ComputeSunRotation(TimeOfDay));
+	const int32 Year = GI ? GI->GetRealmYear() : 1000;
+	const int32 Month = GI ? GI->GetRealmMonth() : 4;
+	const int32 Day = GI ? GI->GetRealmDay() : 1;
+	const EIHTimeBracket Bracket = GI ? GI->GetRealmHourBracket() : EIHTimeBracket::Afternoon;
+
+	if (!CallUdsSetTimeOfDayWithString(TankSkyActor, IHInvisibleHandSpec::GetTimeBracketTimeString(Bracket)))
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("UDS: 'Set Time of Day With String' function not found on %s — sky will not update."),
+			*GetNameSafe(TankSkyActor));
+	}
+	SetUdsIntProperty(TankSkyActor, TEXT("Year"), Year);
+	SetUdsIntProperty(TankSkyActor, TEXT("Month"), Month);
+	SetUdsIntProperty(TankSkyActor, TEXT("Day"), Day);
+	// IH's own canonical 30-day lunar lookup (simple, same every month, user-confirmed) — NOT
+	// UDS's real ~29.5-day Simulate Real Moon, which stays off deliberately (see
+	// ConfigureUltraDynamicSky's comment). Drives UDS's real, independent "Moon Phase" property.
+	SetUdsFloatProperty(TankSkyActor, TEXT("Moon Phase"), IHInvisibleHandSpec::GetMoonPhaseValue(Day));
+	// Year/Month/Day above feed Simulate Real Sun's solar-position math — re-run Startup Sky so
+	// the cached sun/moon orientation recomputes using these final date values, same self-apply
+	// concern as the initial spawn-time setup in ConfigureUltraDynamicSky().
+	CallUdsFunction(TankSkyActor, TEXT("Startup Sky"));
+
+	if (TankWeatherActor)
+	{
+		SetUdsFloatProperty(TankWeatherActor, TEXT("Season"), SeasonFloatFromMonth(Month));
+	}
 }
 
-void AIH_WB_Demo004GameMode::ConfigureTankSunLight()
+void AIH_WB_Demo004GameMode::ApplyCloudsVisible(bool bVisible)
+{
+	if (bVisible)
+	{
+		if (TankSkyActor) { SetUdsFloatProperty(TankSkyActor, TEXT("Cloud Coverage"), CachedSkyCloudCoverage); }
+		if (TankWeatherActor)
+		{
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Cloud Coverage"), CachedWeatherCloudCoverage);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Rain"), CachedWeatherRain);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Snow"), CachedWeatherSnow);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Fog"), CachedWeatherFog);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Dust"), CachedWeatherDust);
+		}
+	}
+	else
+	{
+		// Zero everything, not just Cloud Coverage — a Weather Preview preset (Rain/Snow/Sand
+		// family) bundles its own values for all of these via "Change Weather" and would otherwise
+		// silently win over a Clouds-off toggle applied beforehand.
+		if (TankSkyActor)
+		{
+			CachedSkyCloudCoverage = GetUdsFloatProperty(TankSkyActor, TEXT("Cloud Coverage"), CachedSkyCloudCoverage);
+			SetUdsFloatProperty(TankSkyActor, TEXT("Cloud Coverage"), 0.f);
+		}
+		if (TankWeatherActor)
+		{
+			CachedWeatherCloudCoverage = GetUdsFloatProperty(TankWeatherActor, TEXT("Cloud Coverage"), CachedWeatherCloudCoverage);
+			CachedWeatherRain = GetUdsFloatProperty(TankWeatherActor, TEXT("Rain"), CachedWeatherRain);
+			CachedWeatherSnow = GetUdsFloatProperty(TankWeatherActor, TEXT("Snow"), CachedWeatherSnow);
+			CachedWeatherFog = GetUdsFloatProperty(TankWeatherActor, TEXT("Fog"), CachedWeatherFog);
+			CachedWeatherDust = GetUdsFloatProperty(TankWeatherActor, TEXT("Dust"), CachedWeatherDust);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Cloud Coverage"), 0.f);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Rain"), 0.f);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Snow"), 0.f);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Fog"), 0.f);
+			SetUdsFloatProperty(TankWeatherActor, TEXT("Dust"), 0.f);
+		}
+	}
+}
+
+void AIH_WB_Demo004GameMode::StartAtmosphericsPlayback(float SecondsPerStep)
+{
+	UIH_WB_Demo004GameInstance* GI = GetGameInstance<UIH_WB_Demo004GameInstance>();
+	if (!GI)
+	{
+		return;
+	}
+	if (!bAtmosphericsPlaying)
+	{
+		// Remember the dialed starting position so Stop can return to it; Pause leaves it as-is.
+		AtmosphericsStartYear = GI->GetRealmYear();
+		AtmosphericsStartMonth = GI->GetRealmMonth();
+		AtmosphericsStartDay = GI->GetRealmDay();
+		AtmosphericsStartHourBracket = GI->GetRealmHourBracket();
+	}
+	bAtmosphericsPlaying = true;
+	GetWorldTimerManager().SetTimer(
+		AtmosphericsPlaybackTimer, this, &AIH_WB_Demo004GameMode::AdvanceAtmosphericsStep,
+		FMath::Max(SecondsPerStep, 0.05f), true);
+}
+
+void AIH_WB_Demo004GameMode::PauseAtmosphericsPlayback()
+{
+	bAtmosphericsPlaying = false;
+	GetWorldTimerManager().ClearTimer(AtmosphericsPlaybackTimer);
+}
+
+void AIH_WB_Demo004GameMode::StopAtmosphericsPlayback()
+{
+	PauseAtmosphericsPlayback();
+	if (UIH_WB_Demo004GameInstance* GI = GetGameInstance<UIH_WB_Demo004GameInstance>())
+	{
+		GI->SetRealmYear(AtmosphericsStartYear);
+		GI->SetRealmMonth(AtmosphericsStartMonth);
+		GI->SetRealmDay(AtmosphericsStartDay);
+		GI->SetRealmHourBracket(AtmosphericsStartHourBracket);
+		ApplyCalendarFromGameInstance();
+	}
+}
+
+void AIH_WB_Demo004GameMode::AdvanceAtmosphericsStep()
+{
+	UIH_WB_Demo004GameInstance* GI = GetGameInstance<UIH_WB_Demo004GameInstance>();
+	if (!GI)
+	{
+		return;
+	}
+
+	int32 Bracket = static_cast<int32>(GI->GetRealmHourBracket()) + 1;
+	if (Bracket > 9) // wrapped past Nightfall -> Midnight of the next day
+	{
+		Bracket = 0;
+		int32 Day = GI->GetRealmDay() + 1;
+		int32 Month = GI->GetRealmMonth();
+		int32 Year = GI->GetRealmYear();
+		if (Day > 30) // canonical 30-day month (InvisibleHand_CalendarSystem.md §3)
+		{
+			Day = 1;
+			++Month;
+			if (Month > 12)
+			{
+				Month = 1;
+				++Year;
+			}
+		}
+		GI->SetRealmYear(Year);
+		GI->SetRealmMonth(Month);
+		GI->SetRealmDay(Day);
+	}
+	GI->SetRealmHourBracket(static_cast<EIHTimeBracket>(Bracket));
+	ApplyCalendarFromGameInstance();
+}
+
+void AIH_WB_Demo004GameMode::ApplyPreviewTimeOfDay(EIHTimeBracket Bracket)
+{
+	if (!TankSkyActor)
+	{
+		return;
+	}
+	CallUdsSetTimeOfDayWithString(TankSkyActor, IHInvisibleHandSpec::GetTimeBracketTimeString(Bracket));
+}
+
+bool AIH_WB_Demo004GameMode::ApplyWeatherPreset(const FString& PresetName)
+{
+	if (!TankWeatherActor)
+	{
+		return false;
+	}
+	const FString Path = FString::Printf(
+		TEXT("%s%s.%s"), IHInvisibleHandSpec::GetUdsWeatherPresetsFolder(), *PresetName, *PresetName);
+	UObject* Preset = StaticLoadObject(UObject::StaticClass(), nullptr, *Path);
+	if (!Preset)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Weather Preview: failed to load preset '%s' at '%s'."),
+			*PresetName, *Path);
+		return false;
+	}
+	return CallUdsChangeWeather(TankWeatherActor, Preset);
+}
+
+void AIH_WB_Demo004GameMode::ResumeRandomWeatherVariation()
+{
+	// DIAGNOSTIC (two prior attempts — Change to Random Weather Variation alone, then + Start
+	// Weather System — both reported as still inoperative): log the "Random Weather Variation"
+	// enum value before/after every step, so the next PIE log tells us definitively whether (a)
+	// selecting a static preset via Change Weather silently resets this property back to
+	// Disabled, and (b) whether our calls are actually landing on it. Real candidate fix bundled
+	// in alongside the logging rather than a bare log-only pass: explicitly re-set the property
+	// to RANDOM_INTERVAL(1) directly, since that property name/enum value is already confirmed
+	// real (used at spawn in ConfigureUltraDynamicSky) — more robust than relying solely on the
+	// "Change to Random Weather Variation" function to flip it as a side effect.
+	const int32 BeforeValue = GetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"));
+
+	const bool bChangeFuncFound = CallUdsFunction(TankWeatherActor, TEXT("Change to Random Weather Variation"));
+	const bool bPropSet = SetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"), 1);
+
+	// Same "raw call doesn't restart the underlying system" pattern already confirmed for Startup
+	// Sky/North Yaw — re-run Start Weather System so its random-interval countdown actually
+	// (re)starts, not just the mode flag.
+	const bool bStartFuncFound = CallUdsFunction(TankWeatherActor, TEXT("Start Weather System"));
+
+	const int32 AfterValue = GetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"));
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("Gate 0 DIAG: ResumeRandomWeather before=%d changeFuncFound=%d propSet=%d startFuncFound=%d after=%d (expect before=0/Disabled if a static preset was active, after=1/RandomInterval)"),
+		BeforeValue, bChangeFuncFound ? 1 : 0, bPropSet ? 1 : 0, bStartFuncFound ? 1 : 0, AfterValue);
+}
+
+void AIH_WB_Demo004GameMode::ConfigureUltraDynamicSky()
 {
 	UWorld* World = GetWorld();
 	if (!World || World->GetNetMode() == NM_Client)
 	{
 		return;
 	}
-
-	if (!TankSunLight)
+	if (!IHInvisibleHandSpec::IsGate0UltraDynamicSkyEnabled())
 	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("Gate 0: bGate0UseUltraDynamicSky is false — no sky actor spawned."));
+		return;
+	}
+
+	// Destroy any pre-existing native ADirectionalLight actors (e.g. baked into the level/map)
+	// BEFORE spawning UDS — otherwise UDS's own PIE-start conflict detection throws a blocking
+	// "Convert Existing Lighting Scenario" modal every session, since it finds a directional light
+	// it didn't create. UDS's Blueprint actors own lighting entirely; no native light should exist.
+	{
+		TArray<AActor*> StaleLights;
 		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
 		{
-			TankSunLight = *It;
-			break;
+			StaleLights.Add(*It);
+		}
+		for (AActor* StaleLight : StaleLights)
+		{
+			UE_LOG(LogIH_WB_Demo004, Log,
+				TEXT("Gate 0: Destroying pre-existing native ADirectionalLight '%s' — UDS owns lighting."),
+				*GetNameSafe(StaleLight));
+			World->DestroyActor(StaleLight);
 		}
 	}
 
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	if (!TankSunLight)
-	{
-		TankSunLight = World->SpawnActor<ADirectionalLight>(
-			ADirectionalLight::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params);
-	}
 
-	if (TankSunLight)
+	if (!TankSkyActor)
 	{
-		if (UDirectionalLightComponent* C = Cast<UDirectionalLightComponent>(TankSunLight->GetLightComponent()))
+		if (UClass* SkyClass = StaticLoadClass(AActor::StaticClass(), nullptr, IHInvisibleHandSpec::GetUdsSkyBlueprintClassPath()))
 		{
-			C->SetIntensity(IHInvisibleHandSpec::TankSunIntensityPie);
-			C->SetLightColor(FLinearColor(1.f, 0.96f, 0.88f));
-			C->SetSpecularScale(0.45f);
-			C->SetUseTemperature(true);
-			C->SetTemperature(5600.f);
-			C->SetCastShadows(true);
-			C->SetMobility(EComponentMobility::Movable);
+			TankSkyActor = World->SpawnActor<AActor>(SkyClass, FVector::ZeroVector, FRotator::ZeroRotator, Params);
 		}
-		ApplySunFromGameInstance();
-	}
-}
-
-void AIH_WB_Demo004GameMode::ApplyGrabContrastSunIntensity(const bool bGrabContrast)
-{
-	UWorld* World = GetWorld();
-	if (!World || World->GetNetMode() == NM_Client)
-	{
-		return;
-	}
-	if (!TankSunLight)
-	{
-		for (TActorIterator<ADirectionalLight> It(World); It; ++It)
+		else
 		{
-			TankSunLight = *It;
-			break;
+			UE_LOG(LogIH_WB_Demo004, Error,
+				TEXT("Gate 0: failed to load Ultra Dynamic Sky class at '%s'."),
+				IHInvisibleHandSpec::GetUdsSkyBlueprintClassPath());
 		}
 	}
-	if (!TankSunLight)
+
+	if (!TankWeatherActor)
 	{
-		return;
+		if (UClass* WeatherClass = StaticLoadClass(AActor::StaticClass(), nullptr, IHInvisibleHandSpec::GetUdsWeatherBlueprintClassPath()))
+		{
+			TankWeatherActor = World->SpawnActor<AActor>(WeatherClass, FVector::ZeroVector, FRotator::ZeroRotator, Params);
+		}
+		else
+		{
+			UE_LOG(LogIH_WB_Demo004, Error,
+				TEXT("Gate 0: failed to load Ultra Dynamic Weather class at '%s'."),
+				IHInvisibleHandSpec::GetUdsWeatherBlueprintClassPath());
+		}
 	}
-	if (UDirectionalLightComponent* C = Cast<UDirectionalLightComponent>(TankSunLight->GetLightComponent()))
+
+	if (TankSkyActor)
 	{
-		C->SetIntensity(bGrabContrast
-			? IHInvisibleHandSpec::TankSunIntensityGrabContrast
-			: IHInvisibleHandSpec::TankSunIntensityPie);
+		// North Yaw reconciliation: this project's established convention is +Y=North (screen-up
+		// on the minimap, per the Plan Addendum 14 comments elsewhere in this file), but UDS's
+		// sun/moon solar-arc math defaults North Yaw=0 to UE's own Yaw=0 (+X) direction — a 90°
+		// mismatch, visually confirmed by the user (PIE grab: sunrise occurring along the
+		// minimap's North arrow instead of East). Single trial matching the user's own diagnosed
+		// correction ("rotate 90° clockwise") — flag and flip the sign if it's backwards.
+		SetUdsFloatProperty(TankSkyActor, TEXT("North Yaw"), 90.f);
+		// Cloud ceiling: confirmed real property "Bottom Altitude" (km), default 0.6 = 600m —
+		// matches the user's own measured cloud-ceiling altitude exactly. IH's WB camera routinely
+		// operates well above that (grabs this session showed 15-55km ASL), so raised to 5km —
+		// still a plausible sky height, comfortably above normal WB working altitudes. Adjustable;
+		// flag if this number should be different.
+		// DIAGNOSTIC (two prior attempts showed zero visual effect, exactly reproducing the 0.6
+		// default — reading the value straight back to confirm whether the write is landing at
+		// all at the C++ level, rather than guessing a third time): if this log ever shows
+		// anything other than ~5.0, FindPropertyByName is failing silently for this property name.
+		const bool bBottomAltSet = SetUdsFloatProperty(TankSkyActor, TEXT("Bottom Altitude"), 5.f);
+		const float BottomAltReadback = GetUdsFloatProperty(TankSkyActor, TEXT("Bottom Altitude"), -1.f);
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("Gate 0 DIAG: Bottom Altitude set=%d readback=%.3f (expect ~5.0)"),
+			bBottomAltSet ? 1 : 0, BottomAltReadback);
+
+		// North Yaw only takes effect "in the simulation" per UDS's own docs — confirmed real
+		// reason the earlier North Yaw write had no visible effect, since Simulate Real Sun was
+		// still off. Enabling it here is the documented, correct fix, and also makes sun elevation/
+		// day-length vary realistically by Latitude and Month/Day (both already wired) instead of
+		// the previous fixed artistic arc. Real Moon deliberately NOT enabled — IH's own canonical
+		// 30-day lunar cycle (InvisibleHand_CalendarSystem.md §5) must not be overridden by UDS's
+		// real ~29.5-day astronomical moon phase; see the Moon Phase push in
+		// ApplyCalendarFromGameInstance() instead, which drives UDS's manual "Moon Phase" property
+		// directly from IH's own canonical day-of-month lookup.
+		SetUdsBoolProperty(TankSkyActor, TEXT("Simulate Real Sun"), true);
+		SetUdsBoolProperty(TankSkyActor, TEXT("Simulate Real Stars"), true);
+		SetUdsFloatProperty(TankSkyActor, TEXT("Time Zone"), 0.f);
+		// IH canon is Northern-Hemisphere-only latitudes (user-confirmed) — Nordic/Temperate/
+		// Tropical reference degrees are this project's own already-established canonical values.
+		if (const UIH_WB_Demo004GameInstance* GI = GetGameInstance<UIH_WB_Demo004GameInstance>())
+		{
+			SetUdsFloatProperty(TankSkyActor, TEXT("Latitude"), IHInvisibleHandSpec::GetRealmLatitudeDegrees(GI->GetRealmLatitude()));
+		}
+		SetUdsFloatProperty(TankSkyActor, TEXT("Longitude"), 0.f);
+
+		// UDS's property writes don't self-apply — its internal sun/moon orientation cache and
+		// other startup-only logic only recompute when "Startup Sky" runs (confirmed callable via
+		// headless probe; per UDS's own docs this is "also called to restart the sky at runtime,
+		// like when applying a configuration"). Without this, North Yaw/Bottom Altitude/Simulate
+		// above are written but silently never take visual effect — confirmed via a real PIE log
+		// showing the property writes succeeding with zero errors, yet no visible change.
+		CallUdsFunction(TankSkyActor, TEXT("Startup Sky"));
+	}
+
+	if (TankWeatherActor)
+	{
+		// Manual Season Mode so IH's own Month-derived Season isn't overwritten by UDS's
+		// auto-derive-from-Date behavior (UDS_SeasonMode::MANUAL_SETTING=1).
+		SetUdsByteEnumProperty(TankWeatherActor, TEXT("Season Mode"), 1);
+		// Random Interval (UDS_RandomWeatherTiming::RANDOM_INTERVAL=1), not Daily(2): per UDS's
+		// own docs, Daily/Hourly timing keys off elapsed time ON UDS'S OWN CLOCK — but
+		// TankSkyActor's Time Speed is frozen at 0 so the Hour-preview snapshot stays stable,
+		// meaning a Daily-mode trigger would never fire.
+		SetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"), 1);
+		// Same self-apply issue as Startup Sky above: UDW's random-weather timer system is only
+		// (re)initialized by "Start Weather System" (confirmed callable via headless probe; UDS's
+		// own docs describe it as the function that handles "starting systems like random weather
+		// variation"), not by writing the raw "Random Weather Variation" property alone — this is
+		// almost certainly why "Resume Random Weather" looked non-responsive even after the earlier
+		// Daily->Random Interval timing fix.
+		CallUdsFunction(TankWeatherActor, TEXT("Start Weather System"));
+	}
+
+	if (TankSkyActor)
+	{
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("Gate 0: Spawned Ultra Dynamic Sky ('%s') + Weather ('%s')."),
+			*GetNameSafe(TankSkyActor), *GetNameSafe(TankWeatherActor));
+		ApplyCalendarFromGameInstance();
 	}
 }
 
