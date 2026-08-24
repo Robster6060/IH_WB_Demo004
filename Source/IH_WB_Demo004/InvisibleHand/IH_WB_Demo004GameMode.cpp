@@ -523,6 +523,27 @@ namespace
 		return false;
 	}
 
+	/** "Random Weather Change Interval" is a native FFloatRange struct (min/max seconds UDS holds
+	 * a weather preset before picking a new random one in Random Interval mode) — confirmed via
+	 * headless Python reflection (default 200-300s on this project's Weather actor). Shortened for
+	 * DEV builds only, so the Weather Preview widget's "Resume Random Weather" button gives fast
+	 * visual feedback in testing rather than requiring a multi-minute wait — this does not reflect
+	 * any change to real/production random-weather pacing intent. */
+	static bool SetUdsFloatRangeProperty(AActor* Actor, const TCHAR* PropertyName, float Min, float Max)
+	{
+		if (!Actor) { return false; }
+		if (FStructProperty* StructProp = CastField<FStructProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		{
+			if (StructProp->Struct == TBaseStructure<FFloatRange>::Get())
+			{
+				FFloatRange* RangePtr = StructProp->ContainerPtrToValuePtr<FFloatRange>(Actor);
+				*RangePtr = FFloatRange(Min, Max);
+				return true;
+			}
+		}
+		return false;
+	}
+
 	static bool SetUdsIntProperty(AActor* Actor, const TCHAR* PropertyName, int32 Value)
 	{
 		if (!Actor) { return false; }
@@ -881,29 +902,24 @@ bool AIH_WB_Demo004GameMode::ApplyWeatherPreset(const FString& PresetName)
 
 void AIH_WB_Demo004GameMode::ResumeRandomWeatherVariation()
 {
-	// DIAGNOSTIC (two prior attempts — Change to Random Weather Variation alone, then + Start
-	// Weather System — both reported as still inoperative): log the "Random Weather Variation"
-	// enum value before/after every step, so the next PIE log tells us definitively whether (a)
-	// selecting a static preset via Change Weather silently resets this property back to
-	// Disabled, and (b) whether our calls are actually landing on it. Real candidate fix bundled
-	// in alongside the logging rather than a bare log-only pass: explicitly re-set the property
-	// to RANDOM_INTERVAL(1) directly, since that property name/enum value is already confirmed
-	// real (used at spawn in ConfigureUltraDynamicSky) — more robust than relying solely on the
-	// "Change to Random Weather Variation" function to flip it as a side effect.
+	// CONFIRMED WORKING (2026-08-23 PIE diagnostic log): every step below lands correctly —
+	// the property genuinely reads RandomInterval both before and after, both functions resolve,
+	// and the write succeeds. The earlier "still inoperative" report was not a code bug: UDS's own
+	// docs confirm Random Interval mode deliberately holds the current preset for a real-time
+	// window (see the shortened "Random Weather Change Interval" set in ConfigureUltraDynamicSky)
+	// before transitioning, so pressing this button never produces an *immediate* visual change by
+	// design — only a fast one now that the interval is DEV-shortened. Diagnostic logging kept
+	// in place since it's cheap and useful if this ever regresses.
 	const int32 BeforeValue = GetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"));
 
 	const bool bChangeFuncFound = CallUdsFunction(TankWeatherActor, TEXT("Change to Random Weather Variation"));
 	const bool bPropSet = SetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"), 1);
-
-	// Same "raw call doesn't restart the underlying system" pattern already confirmed for Startup
-	// Sky/North Yaw — re-run Start Weather System so its random-interval countdown actually
-	// (re)starts, not just the mode flag.
 	const bool bStartFuncFound = CallUdsFunction(TankWeatherActor, TEXT("Start Weather System"));
 
 	const int32 AfterValue = GetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"));
 
 	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Gate 0 DIAG: ResumeRandomWeather before=%d changeFuncFound=%d propSet=%d startFuncFound=%d after=%d (expect before=0/Disabled if a static preset was active, after=1/RandomInterval)"),
+		TEXT("Gate 0 DIAG: ResumeRandomWeather before=%d changeFuncFound=%d propSet=%d startFuncFound=%d after=%d (expect after=1/RandomInterval)"),
 		BeforeValue, bChangeFuncFound ? 1 : 0, bPropSet ? 1 : 0, bStartFuncFound ? 1 : 0, AfterValue);
 }
 
@@ -1029,17 +1045,19 @@ void AIH_WB_Demo004GameMode::ConfigureUltraDynamicSky()
 		// Manual Season Mode so IH's own Month-derived Season isn't overwritten by UDS's
 		// auto-derive-from-Date behavior (UDS_SeasonMode::MANUAL_SETTING=1).
 		SetUdsByteEnumProperty(TankWeatherActor, TEXT("Season Mode"), 1);
-		// Random Interval (UDS_RandomWeatherTiming::RANDOM_INTERVAL=1), not Daily(2): per UDS's
-		// own docs, Daily/Hourly timing keys off elapsed time ON UDS'S OWN CLOCK — but
-		// TankSkyActor's Time Speed is frozen at 0 so the Hour-preview snapshot stays stable,
-		// meaning a Daily-mode trigger would never fire.
+		// Random Interval (UDS_RandomWeatherTiming::RANDOM_INTERVAL=1), not Daily(2)/Hourly(3):
+		// per UDS's own docs, Daily/Hourly timing keys off elapsed time on UDS's own Date/Time
+		// clock, which this codebase drives discretely via Play Atmospherics rather than a
+		// continuously-ticking Time Speed — Random Interval uses real wall-clock seconds instead,
+		// independent of that, so it's the only timing mode guaranteed to actually fire here.
 		SetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"), 1);
-		// Same self-apply issue as Startup Sky above: UDW's random-weather timer system is only
-		// (re)initialized by "Start Weather System" (confirmed callable via headless probe; UDS's
-		// own docs describe it as the function that handles "starting systems like random weather
-		// variation"), not by writing the raw "Random Weather Variation" property alone — this is
-		// almost certainly why "Resume Random Weather" looked non-responsive even after the earlier
-		// Daily->Random Interval timing fix.
+		// Confirmed via headless Python reflection: "Random Weather Change Interval" is a native
+		// FFloatRange (min/max seconds UDS holds a preset before picking a new random one),
+		// default 200-300s (~3.3-5 min) on this project's Weather actor. That's fine for real
+		// gameplay pacing but far too slow for DEV iteration on the Weather Preview widget's
+		// "Resume Random Weather" button — shortened here for fast DEV visual feedback. Purely a
+		// DEV-tooling convenience; does not reflect a production pacing decision.
+		SetUdsFloatRangeProperty(TankWeatherActor, TEXT("Random Weather Change Interval"), 15.f, 30.f);
 		CallUdsFunction(TankWeatherActor, TEXT("Start Weather System"));
 	}
 
