@@ -1433,6 +1433,14 @@ void AIH_WB_Demo004GameMode::SpawnIslandsFromGameInstance()
 	}));
 
 	SpawnIslandBaseDevPropsForSpawnedIslands();
+
+	// Waterline conversion Phase 6 (IH-DEC-043): shore managers need real per-island footprint
+	// data, which only exists after islands finish generating — hence spawning them here rather
+	// than alongside the ocean in ConfigureUltraDynamicSky's ocean-provider block.
+	if (WaterlineOceanAdapter)
+	{
+		WaterlineOceanAdapter->SpawnShoreManagersForIslands(SpawnedIslands);
+	}
 }
 
 void AIH_WB_Demo004GameMode::CompactIslandsTowardStoryStickOrigin()

@@ -12,6 +12,8 @@
 #include "GameFramework/Actor.h"
 #include "IH_WaterlineOceanAdapter.generated.h"
 
+class AIH_WB_IslandActor;
+
 /** Real-world-position ocean surface sample. Phase 5 (real Waterline height/normal/velocity
  * sampling) is not implemented yet — SampleOceanSurface() currently returns the canonical flat
  * fallback (Z=0, up normal, zero velocity), per IH_WaterlinePro_Conversion.md Phase 4 step 7:
@@ -53,7 +55,17 @@ public:
 
 	void SetOceanVisible(bool bVisible);
 
+	/** Phase 6 (shore integration): spawns one BP_Shore_Manager_Gen4 per island, each sized to
+	 * that island's real post-generation footprint (GetActorLocation()/GetMainLandFootprintRadiusCm(),
+	 * same evidence-based approach proven in the IH-DEC-042 spike) and wired to this adapter's
+	 * Waterline ocean instance via the real "WaterBody" property. No-ops if the Waterline ocean
+	 * failed to initialize. */
+	void SpawnShoreManagersForIslands(const TArray<TObjectPtr<AIH_WB_IslandActor>>& Islands);
+
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<AActor> WaterlineOceanInstance = nullptr;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AActor>> ShoreManagerInstances;
 };

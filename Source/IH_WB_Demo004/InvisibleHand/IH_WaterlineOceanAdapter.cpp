@@ -1,6 +1,8 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IH_WaterlineOceanAdapter.h"
+#include "IH_WB_IslandActor.h"
+#include "Components/BoxComponent.h"
 
 namespace
 {
@@ -24,6 +26,46 @@ namespace
 			return true;
 		}
 		return false;
+	}
+
+	/** Same FByteProperty/FEnumProperty-aware pattern established for UDS this session. */
+	static bool SetWaterlineByteEnumProperty(AActor* Actor, const TCHAR* PropertyName, uint8 Value)
+	{
+		if (!Actor) { return false; }
+		FProperty* Prop = Actor->GetClass()->FindPropertyByName(FName(PropertyName));
+		if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+		{
+			ByteProp->SetPropertyValue_InContainer(Actor, Value);
+			return true;
+		}
+		if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+		{
+			void* ValuePtr = EnumProp->ContainerPtrToValuePtr<void>(Actor);
+			EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, static_cast<int64>(Value));
+			return true;
+		}
+		return false;
+	}
+
+	static bool SetWaterlineObjectProperty(AActor* Actor, const TCHAR* PropertyName, UObject* Value)
+	{
+		if (!Actor) { return false; }
+		if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		{
+			ObjProp->SetObjectPropertyValue_InContainer(Actor, Value);
+			return true;
+		}
+		return false;
+	}
+
+	static UBoxComponent* GetWaterlineBoxComponent(AActor* Actor, const TCHAR* PropertyName)
+	{
+		if (!Actor) { return nullptr; }
+		if (FObjectProperty* Prop = CastField<FObjectProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		{
+			return Cast<UBoxComponent>(Prop->GetObjectPropertyValue_InContainer(Actor));
+		}
+		return nullptr;
 	}
 }
 
@@ -91,4 +133,79 @@ void AIH_WaterlineOceanAdapter::SetOceanVisible(bool bVisible)
 	{
 		WaterlineOceanInstance->SetActorHiddenInGame(!bVisible);
 	}
+	for (const TObjectPtr<AActor>& Shore : ShoreManagerInstances)
+	{
+		if (IsValid(Shore))
+		{
+			Shore->SetActorHiddenInGame(!bVisible);
+		}
+	}
+}
+
+void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjectPtr<AIH_WB_IslandActor>>& Islands)
+{
+	UWorld* World = GetWorld();
+	if (!World || !IsValid(WaterlineOceanInstance))
+	{
+		return;
+	}
+
+	UClass* ShoreClass = StaticLoadClass(AActor::StaticClass(), nullptr,
+		TEXT("/Game/Waterline/8_Ocean_Shore/BP_Shore_Manager_Gen4.BP_Shore_Manager_Gen4_C"));
+	if (!ShoreClass)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Waterline adapter: failed to load BP_Shore_Manager_Gen4 class."));
+		return;
+	}
+
+	int32 SpawnedCount = 0;
+	for (const TObjectPtr<AIH_WB_IslandActor>& Island : Islands)
+	{
+		if (!IsValid(Island))
+		{
+			continue;
+		}
+
+		// Real post-generation geometry, not a guess — same evidence-based approach proven in the
+		// IH-DEC-042 spike: GetActorLocation() is the island's true recentered landmass origin,
+		// GetMainLandFootprintRadiusCm() a real circumscribing radius from actual generated cells.
+		const FVector IslandOrigin = Island->GetActorLocation();
+		const float FootprintRadiusCm = Island->GetMainLandFootprintRadiusCm();
+
+		FActorSpawnParameters Params;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		AActor* ShoreActor = World->SpawnActor<AActor>(ShoreClass,
+			FVector(IslandOrigin.X, IslandOrigin.Y, 0.f), FRotator::ZeroRotator, Params);
+		if (!ShoreActor)
+		{
+			continue;
+		}
+
+		// Mode: confirmed real enum E_Shore_Manager_Modes via headless reflection —
+		// STATIC_MODE=0, DYNAMIC_SET_MODE=1, DYNAMIC_GEN_MODE=2, FULL_DYNAMIC_MODE=3 (vendor
+		// default). STATIC_MODE matches the accepted Task 3 selection: IH bakes each realm once
+		// per seed, so a static capture (recompute on demand, not every tick) is the right fit.
+		SetWaterlineByteEnumProperty(ShoreActor, TEXT("Mode"), 0);
+
+		const bool bWaterBodySet = SetWaterlineObjectProperty(ShoreActor, TEXT("WaterBody"), WaterlineOceanInstance);
+
+		bool bCaptureVolumeResized = false;
+		if (UBoxComponent* CaptureVolume = GetWaterlineBoxComponent(ShoreActor, TEXT("Capture Volume")))
+		{
+			const float HalfExtentXYCm = FMath::Max(FootprintRadiusCm * 1.3f, 5000.f);
+			CaptureVolume->SetBoxExtent(FVector(HalfExtentXYCm, HalfExtentXYCm, 5000.f));
+			bCaptureVolumeResized = true;
+		}
+
+		ShoreActor->Tags.Add(TEXT("IH.Ocean.Shore"));
+		ShoreManagerInstances.Add(ShoreActor);
+		++SpawnedCount;
+
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureVolumeResized=%d."),
+			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureVolumeResized ? 1 : 0);
+	}
+
+	UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter: spawned %d Shore Manager(s) for %d island(s)."),
+		SpawnedCount, Islands.Num());
 }
