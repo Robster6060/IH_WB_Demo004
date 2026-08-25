@@ -79,11 +79,6 @@ protected:
 	void DestroyAllIslandBaseDevProps();
 	void SpawnIslandBaseDevPropsForSpawnedIslands();
 	void RefreshTankGeometry(float RealmHalfExtentNSKm);
-	/** THROWAWAY DEV SPIKE (Waterline Part 2 verification, see plan): spawns one
-	 * BP_Shore_Manager_Gen4 positioned/sized against the first real generated island, to observe
-	 * whether it auto-detects the procedural coastline or needs manual spline authoring. Not
-	 * wired into any permanent gameplay path — remove once the verification question is answered. */
-	void SpawnShoreManagerVerificationSpike();
 
 	UFUNCTION()
 	void DeferredApplyStartCamera();

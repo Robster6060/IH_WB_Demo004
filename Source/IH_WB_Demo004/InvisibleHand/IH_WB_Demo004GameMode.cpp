@@ -23,7 +23,6 @@
 #include "IH_P1C12_OceanPlane.h"
 #include "IHDevViewRuntime.h"
 #include "IH_Cube2FlyPlayerController.h"
-#include "Components/BoxComponent.h"
 #include "IH_Cube2FlyPawn.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/FloatingPawnMovement.h"
@@ -1410,79 +1409,6 @@ void AIH_WB_Demo004GameMode::SpawnIslandsFromGameInstance()
 	}));
 
 	SpawnIslandBaseDevPropsForSpawnedIslands();
-	SpawnShoreManagerVerificationSpike();
-}
-
-void AIH_WB_Demo004GameMode::SpawnShoreManagerVerificationSpike()
-{
-	UWorld* World = GetWorld();
-	if (!World || SpawnedIslands.Num() == 0)
-	{
-		return;
-	}
-
-	// Real geometry, not a guess: GetActorLocation() is the island's true recentered landmass
-	// origin (IH_WB_IslandActor.cpp re-centers on the cell-averaged centroid after generation),
-	// and GetMainLandFootprintRadiusCm() is a real post-generation circumscribing radius from the
-	// actual generated land cells — not the pre-generation layout envelope, which can be far
-	// larger than what actually rendered.
-	AIH_WB_IslandActor* TargetIsland = nullptr;
-	for (const TObjectPtr<AIH_WB_IslandActor>& Candidate : SpawnedIslands)
-	{
-		if (IsValid(Candidate))
-		{
-			TargetIsland = Candidate;
-			break;
-		}
-	}
-	if (!TargetIsland)
-	{
-		return;
-	}
-
-	UClass* ShoreManagerClass = StaticLoadClass(AActor::StaticClass(), nullptr,
-		TEXT("/Game/Waterline/8_Ocean_Shore/BP_Shore_Manager_Gen4.BP_Shore_Manager_Gen4_C"));
-	if (!ShoreManagerClass)
-	{
-		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Shore Manager spike: failed to load BP_Shore_Manager_Gen4 class."));
-		return;
-	}
-
-	const FVector IslandOrigin = TargetIsland->GetActorLocation();
-	const float FootprintRadiusCm = TargetIsland->GetMainLandFootprintRadiusCm();
-
-	FActorSpawnParameters Params;
-	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	AActor* ShoreManager = World->SpawnActor<AActor>(ShoreManagerClass,
-		FVector(IslandOrigin.X, IslandOrigin.Y, 0.f), FRotator::ZeroRotator, Params);
-	if (!ShoreManager)
-	{
-		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Shore Manager spike: SpawnActor failed."));
-		return;
-	}
-
-	// "Capture Volume" is a UBoxComponent exposed as a Blueprint variable of the same name
-	// (confirmed via headless Python reflection: default extent 50x50x32, meant to be scaled to
-	// cover the coastal area it should auto-detect from). Sized here to comfortably cover the
-	// island's real footprint plus a shoreline margin, using the same reflection-by-name pattern
-	// established throughout this session's UDS work — this Blueprint class has no compile-time
-	// C++ type either.
-	bool bCaptureVolumeResized = false;
-	if (FObjectProperty* CaptureVolProp = CastField<FObjectProperty>(
-			ShoreManagerClass->FindPropertyByName(TEXT("Capture Volume"))))
-	{
-		if (UBoxComponent* CaptureVolume = Cast<UBoxComponent>(
-				CaptureVolProp->GetObjectPropertyValue_InContainer(ShoreManager)))
-		{
-			const float HalfExtentXYCm = FMath::Max(FootprintRadiusCm * 1.3f, 5000.f);
-			CaptureVolume->SetBoxExtent(FVector(HalfExtentXYCm, HalfExtentXYCm, 5000.f));
-			bCaptureVolumeResized = true;
-		}
-	}
-
-	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Shore Manager spike: spawned against island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, captureVolumeResized=%d. THROWAWAY TEST — check in PIE whether the shore visually follows the real coastline or needs manual authoring, then remove this spike."),
-		*TargetIsland->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bCaptureVolumeResized ? 1 : 0);
 }
 
 void AIH_WB_Demo004GameMode::CompactIslandsTowardStoryStickOrigin()
