@@ -4,6 +4,7 @@
 
 #include "IHInvisibleHandDesignSpec.h"
 #include "IH_P1C12_OceanPlane.h"
+#include "IH_WaterlineOceanAdapter.h"
 #include "IH_WB_Demo004.h"
 #include "IH_WB_Demo004GameMode.h"
 #include "IH_WB_IslandActor.h"
@@ -109,6 +110,12 @@ namespace IHDevViewRuntime
 		for (TActorIterator<AIH_P1C12_OceanPlane> It(World); It; ++It)
 		{
 			It->ApplyDevOceanVisibility(bShow);
+		}
+		// IH-DEC-043 (Waterline PRO 6 conversion): handle whichever ocean provider is actually
+		// active — either can be spawned depending on IHInvisibleHandSpec::GetGate0OceanProvider().
+		for (TActorIterator<AIH_WaterlineOceanAdapter> It(World); It; ++It)
+		{
+			It->SetOceanVisible(bShow);
 		}
 		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Phase DEV-WWF viewToggle ocean=%d"), bShow ? 1 : 0);
 	}

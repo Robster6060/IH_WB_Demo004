@@ -10,6 +10,7 @@
 #include "IH_WB_Demo004GameMode.generated.h"
 
 class AIH_P1C12_OceanPlane;
+class AIH_WaterlineOceanAdapter;
 class AIH_P1C08_AltitudeStoryStickActor;
 class AIH_WB_IslandActor;
 class AIH_P1C10_IslandBaseDevPropActor;
@@ -106,8 +107,12 @@ protected:
 	UPROPERTY(Transient) TArray<TObjectPtr<AIH_P1C10_IslandBaseDevPropActor>> SpawnedIslandBaseDevProps;
 	UPROPERTY(Transient) TArray<float> IslandBaseSemiMajorCm;
 	UPROPERTY(Transient) TArray<FVector2D> SeedBaseCentersCm;
-	/** Gate 0 (P1C12 Arbor): custom ocean plane — active when bGate0UseCustomOceanPlane = true. */
+	/** Gate 0 (P1C12 Arbor): custom ocean plane — active when GetGate0OceanProvider() selects
+	 * LegacyProcedural (or as a fail-safe fallback if the Waterline adapter fails to load). */
 	UPROPERTY(Transient) TObjectPtr<AIH_P1C12_OceanPlane> CustomOceanPlane = nullptr;
+	/** Waterline PRO 6 conversion (IH-DEC-043) — active when GetGate0OceanProvider() selects
+	 * WaterlineGen4. */
+	UPROPERTY(Transient) TObjectPtr<AIH_WaterlineOceanAdapter> WaterlineOceanAdapter = nullptr;
 	/** Ultra Dynamic Sky/Weather (Content-only Blueprint pack, no native C++ type — IH-DEC-040). */
 	UPROPERTY(Transient) TObjectPtr<AActor> TankSkyActor = nullptr;
 	UPROPERTY(Transient) TObjectPtr<AActor> TankWeatherActor = nullptr;

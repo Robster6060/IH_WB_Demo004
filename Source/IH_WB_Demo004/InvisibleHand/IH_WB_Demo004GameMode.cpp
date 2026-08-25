@@ -23,6 +23,7 @@
 #include "IH_P1C12_OceanPlane.h"
 #include "IHDevViewRuntime.h"
 #include "IH_Cube2FlyPlayerController.h"
+#include "IH_WaterlineOceanAdapter.h"
 #include "IH_Cube2FlyPawn.h"
 #include "Components/StaticMeshComponent.h"
 #include "GameFramework/FloatingPawnMovement.h"
@@ -47,10 +48,11 @@ namespace
 	 * Do No Harm: this is pure actor removal — zero runtime Water Plugin configuration.
 	 */
 	/**
-	 * P1C12 Arbor: keep AWaterBodyOcean and AWaterZone — they provide the GPU Gerstner waves.
-	 * Only destroy finite-tank helper bodies (River, Lake, Custom) which have no place in
-	 * an endless-ocean world.  AWaterBodyOcean + AWaterZone + WaterMeshComponent are
-	 * intentionally preserved so ship buoyancy and shore lapping continue to work.
+	 * P1C12 Arbor: this project never spawns AWaterBodyOcean/AWaterZone (confirmed — the active
+	 * ocean is always AIH_P1C12_OceanPlane or, IH-DEC-043, AIH_WaterlineOceanAdapter). This only
+	 * destroys stray finite-tank helper bodies (River, Lake, Custom) inherited from a copied level
+	 * template, which have no place in an endless-ocean world. Preserving AWaterBodyOcean/AWaterZone
+	 * types here is a no-op today, kept only in case a future map ever carries one in.
 	 */
 	static void DestroyInheritedWaterPluginActors(UWorld* World)
 	{
@@ -88,7 +90,7 @@ namespace
 			World->DestroyActor(Actor);
 		}
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("P1C12 Gate0: AWaterBodyOcean + AWaterZone preserved — GPU Gerstner waves active."));
+			TEXT("P1C12 Gate0: stray inherited Water Plugin actors cleaned up."));
 	}
 
 	static bool IsLikelyEngineTemplateFloor(AStaticMeshActor* SMA)
@@ -1084,30 +1086,52 @@ void AIH_WB_Demo004GameMode::StartPlay()
 	IHDevViewRuntime::ApplyCloudsVisibilityToWorld(World);
 #endif
 
-	// P1C12 Arbor: clean up non-ocean Water Plugin bodies (rivers, lakes) while preserving
-	// AWaterBodyOcean + AWaterZone — these deliver the GPU Gerstner waves.
-	// Do No Harm: this function intentionally does NOT destroy AWaterBodyOcean.
+	// P1C12 Arbor: clean up non-ocean Water Plugin bodies (rivers, lakes) inherited from a copied
+	// level template. Neither AWaterBodyOcean nor AWaterZone is ever spawned by this project — the
+	// active ocean is always AIH_P1C12_OceanPlane or (IH-DEC-043) AIH_WaterlineOceanAdapter,
+	// selected below. This function only removes stray Water Plugin actors, never the real ocean.
 	DestroyInheritedWaterPluginActors(World);
 
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	// Gate 0 (WT-A): custom ocean plane only — WaterTankRig aquarium path retired.
-	if (IHInvisibleHandSpec::IsGate0CustomOceanPlaneEnabled())
+	// Gate 0 ocean provider selection (IH-DEC-043, Waterline PRO 6 staged conversion — Phase 1/2).
+	// WaterlineGen4 fails safe to the legacy plane if the soft-load/spawn doesn't succeed.
+	bool bOceanSpawned = false;
+	if (IHInvisibleHandSpec::GetGate0OceanProvider() == EIHOceanProvider::WaterlineGen4)
+	{
+		if (AIH_WaterlineOceanAdapter* Adapter = World->SpawnActor<AIH_WaterlineOceanAdapter>(
+				AIH_WaterlineOceanAdapter::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params))
+		{
+			if (Adapter->InitializeWaterlineOcean())
+			{
+				WaterlineOceanAdapter = Adapter;
+				bOceanSpawned = true;
+				UE_LOG(LogIH_WB_Demo004, Log, TEXT("Gate 0: Ocean provider = WaterlineGen4."));
+			}
+			else
+			{
+				Adapter->Destroy();
+			}
+		}
+	}
+
+	if (!bOceanSpawned && IHInvisibleHandSpec::IsGate0CustomOceanPlaneEnabled())
 	{
 		if (AIH_P1C12_OceanPlane* OceanActor = World->SpawnActor<AIH_P1C12_OceanPlane>(
 				AIH_P1C12_OceanPlane::StaticClass(), FVector::ZeroVector, FRotator::ZeroRotator, Params))
 		{
 			CustomOceanPlane = OceanActor;
 			OceanActor->ConfigureEndlessSea();
+			bOceanSpawned = true;
 			UE_LOG(LogIH_WB_Demo004, Log,
-				TEXT("Gate 0: Spawned AIH_P1C12_OceanPlane (endless camera-follow Gerstner tile)."));
+				TEXT("Gate 0: Ocean provider = LegacyProcedural (AIH_P1C12_OceanPlane, endless camera-follow Gerstner tile)."));
 		}
 	}
-	else
+
+	if (!bOceanSpawned)
 	{
-		UE_LOG(LogIH_WB_Demo004, Warning,
-			TEXT("Gate 0: bGate0UseCustomOceanPlane is false — no ocean surface spawned (WaterTankRig retired)."));
+		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Gate 0: no ocean surface spawned (both providers unavailable/disabled)."));
 	}
 
 	const UIH_WB_Demo004GameInstance* GI = GetGameInstance<UIH_WB_Demo004GameInstance>();

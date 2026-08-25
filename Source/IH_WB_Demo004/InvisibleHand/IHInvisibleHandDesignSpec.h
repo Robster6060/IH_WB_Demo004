@@ -5,6 +5,7 @@
 
 #include "CoreMinimal.h"
 #include "IHCalendarTypes.h"
+#include "IHOceanTypes.h"
 
 namespace IHInvisibleHandSpec
 {
@@ -1568,6 +1569,18 @@ namespace IHInvisibleHandSpec
 	inline bool IsGate0CustomOceanPlaneEnabled()
 	{
 		return bGate0UseCustomOceanPlane;
+	}
+
+	/** Waterline PRO 6 conversion (IH-DEC-043, IH_WaterlinePro_Conversion.md staged migration
+	 * plan). Independent of bGate0UseCustomOceanPlane above — GameMode checks this first; only
+	 * consults bGate0UseCustomOceanPlane when this selects LegacyProcedural. Flip back to
+	 * LegacyProcedural before treating any milestone as production-default; WaterlineGen4 is set
+	 * here for active Phase 1/2 dev testing per explicit user request. */
+	static constexpr EIHOceanProvider Gate0OceanProvider = EIHOceanProvider::WaterlineGen4;
+
+	inline EIHOceanProvider GetGate0OceanProvider()
+	{
+		return Gate0OceanProvider;
 	}
 
 	/**
