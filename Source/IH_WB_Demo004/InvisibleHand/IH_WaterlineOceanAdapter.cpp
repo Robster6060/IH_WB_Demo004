@@ -201,6 +201,17 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		const bool bWaterBodySet = SetWaterlineObjectProperty(ShoreActor, TEXT("WaterBody"), WaterlineOceanInstance);
 
+		// Real regression caught via PIE log (2026-08-26): "Capture Volume"/"Trigger Volume" are
+		// Blueprint-added components (created by the Blueprint's own Construction Script), NOT
+		// native CreateDefaultSubobject components — SpawnActorDeferred() only runs the native
+		// constructor, so these components don't exist yet at this point and every resize attempt
+		// silently found nothing (confirmed: captureVolumeResized=0/triggerVolumeResized=0 in the
+		// log despite the code looking identical to the working pre-deferred-spawn version). Must
+		// resize AFTER FinishSpawning() runs the Construction Script, unlike WaterBody/Mode above
+		// (plain variable slots that exist regardless of construction phase, so must be set BEFORE
+		// FinishSpawning() so the actor's own init logic sees them in time).
+		ShoreActor->FinishSpawning(ShoreTransform);
+
 		const float HalfExtentXYCm = FMath::Max(FootprintRadiusCm * 1.3f, 5000.f);
 
 		bool bCaptureVolumeResized = false;
@@ -221,8 +232,6 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 			TriggerVolume->SetBoxExtent(FVector(HalfExtentXYCm, HalfExtentXYCm, 5000.f));
 			bTriggerVolumeResized = true;
 		}
-
-		ShoreActor->FinishSpawning(ShoreTransform);
 
 		ShoreActor->Tags.Add(TEXT("IH.Ocean.Shore"));
 		ShoreManagerInstances.Add(ShoreActor);
