@@ -904,25 +904,12 @@ bool AIH_WB_Demo004GameMode::ApplyWeatherPreset(const FString& PresetName)
 
 void AIH_WB_Demo004GameMode::ResumeRandomWeatherVariation()
 {
-	// CONFIRMED WORKING (2026-08-23 PIE diagnostic log): every step below lands correctly —
-	// the property genuinely reads RandomInterval both before and after, both functions resolve,
-	// and the write succeeds. The earlier "still inoperative" report was not a code bug: UDS's own
-	// docs confirm Random Interval mode deliberately holds the current preset for a real-time
-	// window (see the shortened "Random Weather Change Interval" set in ConfigureUltraDynamicSky)
-	// before transitioning, so pressing this button never produces an *immediate* visual change by
-	// design — only a fast one now that the interval is DEV-shortened. Diagnostic logging kept
-	// in place since it's cheap and useful if this ever regresses.
-	const int32 BeforeValue = GetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"));
-
-	const bool bChangeFuncFound = CallUdsFunction(TankWeatherActor, TEXT("Change to Random Weather Variation"));
-	const bool bPropSet = SetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"), 1);
-	const bool bStartFuncFound = CallUdsFunction(TankWeatherActor, TEXT("Start Weather System"));
-
-	const int32 AfterValue = GetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"));
-
+	// TEMPORARILY DISCONNECTED (explicit user request, 2026-08-25): confirmed working as of
+	// 2026-08-23 (see git history for the real implementation), but re-enabling random weather
+	// mid-Waterline-conversion-testing was interfering with clean PIE grabs. No-op for now — the
+	// button still exists in the Weather Preview widget but does nothing until this is restored.
 	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Gate 0 DIAG: ResumeRandomWeather before=%d changeFuncFound=%d propSet=%d startFuncFound=%d after=%d (expect after=1/RandomInterval)"),
-		BeforeValue, bChangeFuncFound ? 1 : 0, bPropSet ? 1 : 0, bStartFuncFound ? 1 : 0, AfterValue);
+		TEXT("Gate 0 DIAG: ResumeRandomWeather is temporarily disconnected (Waterline conversion testing) — no-op."));
 }
 
 void AIH_WB_Demo004GameMode::ConfigureUltraDynamicSky()
@@ -1047,6 +1034,12 @@ void AIH_WB_Demo004GameMode::ConfigureUltraDynamicSky()
 		// Manual Season Mode so IH's own Month-derived Season isn't overwritten by UDS's
 		// auto-derive-from-Date behavior (UDS_SeasonMode::MANUAL_SETTING=1).
 		SetUdsByteEnumProperty(TankWeatherActor, TEXT("Season Mode"), 1);
+		// TEMPORARILY DISCONNECTED (explicit user request, 2026-08-25): auto-enabling Random
+		// Interval at spawn + the DEV-shortened 15-30s change interval was cycling weather
+		// uncontrollably during Waterline conversion PIE testing, interfering with clean grabs.
+		// Re-enable once Waterline shore/coastline work stops needing weather held stable —
+		// this is a #if 0, not a deletion, specifically so it's trivial to restore.
+#if 0
 		// Random Interval (UDS_RandomWeatherTiming::RANDOM_INTERVAL=1), not Daily(2)/Hourly(3):
 		// per UDS's own docs, Daily/Hourly timing keys off elapsed time on UDS's own Date/Time
 		// clock, which this codebase drives discretely via Play Atmospherics rather than a
@@ -1060,6 +1053,8 @@ void AIH_WB_Demo004GameMode::ConfigureUltraDynamicSky()
 		// "Resume Random Weather" button — shortened here for fast DEV visual feedback. Purely a
 		// DEV-tooling convenience; does not reflect a production pacing decision.
 		SetUdsFloatRangeProperty(TankWeatherActor, TEXT("Random Weather Change Interval"), 15.f, 30.f);
+#endif
+		SetUdsByteEnumProperty(TankWeatherActor, TEXT("Random Weather Variation"), 0); // Disabled — hold weather stable
 		CallUdsFunction(TankWeatherActor, TEXT("Start Weather System"));
 	}
 

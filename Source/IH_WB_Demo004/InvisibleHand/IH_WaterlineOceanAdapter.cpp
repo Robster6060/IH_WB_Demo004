@@ -183,9 +183,15 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		// Mode: confirmed real enum E_Shore_Manager_Modes via headless reflection —
 		// STATIC_MODE=0, DYNAMIC_SET_MODE=1, DYNAMIC_GEN_MODE=2, FULL_DYNAMIC_MODE=3 (vendor
-		// default). STATIC_MODE matches the accepted Task 3 selection: IH bakes each realm once
-		// per seed, so a static capture (recompute on demand, not every tick) is the right fit.
-		SetWaterlineByteEnumProperty(ShoreActor, TEXT("Mode"), 0);
+		// default). Task 3's accepted "Static Capture" preference used STATIC_MODE here, but the
+		// resulting shore never rendered anything visible (coastline/WWF gap, "nothing for waves
+		// to roll upon") — STATIC_MODE likely needs an explicit one-shot capture trigger we never
+		// called, since "static" implies capture-on-demand rather than continuous. Reverted to
+		// FULL_DYNAMIC_MODE (the vendor's own zero-config shipped default, i.e. what their demo
+		// scenes actually run) to isolate whether Mode was the real blocker before chasing
+		// anything else. Revisit STATIC_MODE (for its lower per-tick cost) once this is confirmed
+		// working and its trigger requirement is found.
+		SetWaterlineByteEnumProperty(ShoreActor, TEXT("Mode"), 3);
 
 		const bool bWaterBodySet = SetWaterlineObjectProperty(ShoreActor, TEXT("WaterBody"), WaterlineOceanInstance);
 
