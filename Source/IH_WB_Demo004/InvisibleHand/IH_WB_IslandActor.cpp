@@ -373,7 +373,11 @@ namespace IH_WB_IslandActorPrivate
 		int32& OutShelfTriCount,
 		int32& OutSlopedBandCellCount,
 		int32& OutBottomPlaneCellCount,
-		int32& OutBoxEdgeExcludedCellCount)
+		int32& OutBoxEdgeExcludedCellCount,
+		const TMap<FIntPoint, TPair<double, int32>>& LandVertexHeightAccum,
+		double LandThresholdParam,
+		double HeightSpanParam,
+		float SummitTopZCmParam)
 	{
 		OutShelfTriCount = 0;
 		OutSlopedBandCellCount = 0;
@@ -617,8 +621,31 @@ namespace IH_WB_IslandActorPrivate
 			const int32 BaseVertId = Verts.Num();
 			for (const FVector2D& P : Cell.Boundary)
 			{
-				const double SmoothedZ = SmoothedZAt(P, CellZ);
-				Verts.Add(FVector(P.X, P.Y, static_cast<float>(SmoothedZ) + ZBiasCm));
+				// Coastal-weld fix: this vertex's Z was previously always computed from
+				// ComputeCellZ's coast-is-exactly-0 assumption, but IslandMesh's own coastal
+				// boundary Z can rise well above 0 wherever a shared Voronoi corner's height gets
+				// pulled up by a taller inland neighbor during its own smoothing pass (Plan
+				// Addendum 12) — most visible near cliffs/hills. The two meshes share identical
+				// X/Y at every coincident boundary point (both read the same Graph.Cells), so
+				// wherever THIS vertex position also belongs to a real land cell, use IslandMesh's
+				// own Z formula exactly (not an approximation) so the two meshes weld with zero
+				// gap. Cells further from the coast (no matching land vertex) fall through to the
+				// original shelf-only Z unchanged.
+				float FinalZCm;
+				if (const TPair<double, int32>* LandAccum = LandVertexHeightAccum.Find(QuantizeVertexKey(P)))
+				{
+					const double LandSmoothedRaw = LandAccum->Value > 0
+						? LandAccum->Key / LandAccum->Value : LandThresholdParam;
+					const double NormalizedHeight =
+						FMath::Clamp((LandSmoothedRaw - LandThresholdParam) / HeightSpanParam, 0.0, 1.0);
+					FinalZCm = FMath::Max(1.f, static_cast<float>(NormalizedHeight) * SummitTopZCmParam);
+				}
+				else
+				{
+					const double SmoothedZ = SmoothedZAt(P, CellZ);
+					FinalZCm = static_cast<float>(SmoothedZ) + ZBiasCm;
+				}
+				Verts.Add(FVector(P.X, P.Y, FinalZCm));
 				Normals.Add(FVector::UpVector);
 				UVs.Add(FVector2D(P.X / 100.0, P.Y / 100.0));
 				Colors.Add(ShelfVertColor);
@@ -4051,7 +4078,8 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	IH_WB_IslandActorPrivate::BuildWwfShelfSection(
 		ShelfMesh, this, Graph,
 		/*BottomPlaneMinCoastDistance=*/-5, /*BottomPlaneMaxDepthCoastDistance=*/-15,
-		ShelfTriCount, ShelfSlopedBandCellCount, ShelfBottomPlaneCellCount, ShelfBoxEdgeExcludedCellCount);
+		ShelfTriCount, ShelfSlopedBandCellCount, ShelfBottomPlaneCellCount, ShelfBoxEdgeExcludedCellCount,
+		VertexHeightAccum, LandThreshold, HeightSpan, SummitTopZCm);
 
 	const double TotalAreaM2 =
 		(2.0 * BuildParams.HalfExtentXCm * 0.01) * (2.0 * BuildParams.HalfExtentYCm * 0.01);
