@@ -201,12 +201,25 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		const bool bWaterBodySet = SetWaterlineObjectProperty(ShoreActor, TEXT("WaterBody"), WaterlineOceanInstance);
 
+		const float HalfExtentXYCm = FMath::Max(FootprintRadiusCm * 1.3f, 5000.f);
+
 		bool bCaptureVolumeResized = false;
 		if (UBoxComponent* CaptureVolume = GetWaterlineBoxComponent(ShoreActor, TEXT("Capture Volume")))
 		{
-			const float HalfExtentXYCm = FMath::Max(FootprintRadiusCm * 1.3f, 5000.f);
 			CaptureVolume->SetBoxExtent(FVector(HalfExtentXYCm, HalfExtentXYCm, 5000.f));
 			bCaptureVolumeResized = true;
+		}
+
+		// "Trigger Volume" is a SEPARATE BoxComponent (default extent ~1x1x0.3m — confirmed via
+		// headless reflection) never touched by prior attempts. Its name strongly implies a
+		// proximity-based activation gate (common LOD/perf pattern: only run shore effects near
+		// the camera) — left at its comically tiny default, shore effects may simply never
+		// activate regardless of every other setting being correct. Resized to match.
+		bool bTriggerVolumeResized = false;
+		if (UBoxComponent* TriggerVolume = GetWaterlineBoxComponent(ShoreActor, TEXT("Trigger Volume")))
+		{
+			TriggerVolume->SetBoxExtent(FVector(HalfExtentXYCm, HalfExtentXYCm, 5000.f));
+			bTriggerVolumeResized = true;
 		}
 
 		ShoreActor->FinishSpawning(ShoreTransform);
@@ -216,8 +229,8 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureVolumeResized=%d."),
-			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureVolumeResized ? 1 : 0);
+			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureVolumeResized=%d, triggerVolumeResized=%d."),
+			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0);
 	}
 
 	UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter: spawned %d Shore Manager(s) for %d island(s)."),
