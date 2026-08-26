@@ -92,18 +92,25 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 		return false;
 	}
 
-	FActorSpawnParameters Params;
-	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-	AActor* OceanActor = World->SpawnActor<AActor>(OceanClass, FVector::ZeroVector, FRotator::ZeroRotator, Params);
+	// Deferred spawn: a Blueprint actor's Construction Script and BeginPlay run synchronously
+	// inside SpawnActor() once the world has already begun play (true here — we spawn mid-session,
+	// well after the world's own BeginPlay). If Waterline's own init logic reads its properties
+	// during that pass, a plain SpawnActor()-then-set-properties sequence configures everything
+	// too late — the actor already initialized off its unconfigured defaults. SpawnActorDeferred +
+	// FinishSpawning() runs our configuration first, Construction Script/BeginPlay after.
+	const FTransform SpawnTransform(FRotator::ZeroRotator, FVector::ZeroVector);
+	AActor* OceanActor = World->SpawnActorDeferred<AActor>(OceanClass, SpawnTransform);
 	if (!OceanActor)
 	{
-		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Waterline adapter: SpawnActor failed — falling back to legacy ocean."));
+		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Waterline adapter: SpawnActorDeferred failed — falling back to legacy ocean."));
 		return false;
 	}
 
 	// "1 Water Level" confirmed real via headless reflection (already ~0 by vendor default, set
 	// explicitly here so canonical sea level Z=0 is never left to an unverified default).
 	const bool bWaterLevelSet = SetWaterlineFloatProperty(OceanActor, TEXT("1 Water Level"), 0.f);
+
+	OceanActor->FinishSpawning(SpawnTransform);
 
 	OceanActor->Tags.Add(TEXT("IH.Ocean.Primary"));
 	WaterlineOceanInstance = OceanActor;
@@ -172,10 +179,14 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		const FVector IslandOrigin = Island->GetActorLocation();
 		const float FootprintRadiusCm = Island->GetMainLandFootprintRadiusCm();
 
-		FActorSpawnParameters Params;
-		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-		AActor* ShoreActor = World->SpawnActor<AActor>(ShoreClass,
-			FVector(IslandOrigin.X, IslandOrigin.Y, 0.f), FRotator::ZeroRotator, Params);
+		// Deferred spawn (see InitializeWaterlineOcean's comment) — critical here specifically:
+		// three prior fix attempts (WaterBody wiring, Capture Volume resize, Mode switch) all
+		// produced zero visible change even though every reflection write succeeded, which is the
+		// exact signature of the shore manager's own init logic already having run — and skipped,
+		// finding WaterBody still None — before our code got a chance to configure it via a plain
+		// SpawnActor() call. Configuring before FinishSpawning() fixes that ordering.
+		const FTransform ShoreTransform(FRotator::ZeroRotator, FVector(IslandOrigin.X, IslandOrigin.Y, 0.f));
+		AActor* ShoreActor = World->SpawnActorDeferred<AActor>(ShoreClass, ShoreTransform);
 		if (!ShoreActor)
 		{
 			continue;
@@ -183,14 +194,9 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		// Mode: confirmed real enum E_Shore_Manager_Modes via headless reflection —
 		// STATIC_MODE=0, DYNAMIC_SET_MODE=1, DYNAMIC_GEN_MODE=2, FULL_DYNAMIC_MODE=3 (vendor
-		// default). Task 3's accepted "Static Capture" preference used STATIC_MODE here, but the
-		// resulting shore never rendered anything visible (coastline/WWF gap, "nothing for waves
-		// to roll upon") — STATIC_MODE likely needs an explicit one-shot capture trigger we never
-		// called, since "static" implies capture-on-demand rather than continuous. Reverted to
-		// FULL_DYNAMIC_MODE (the vendor's own zero-config shipped default, i.e. what their demo
-		// scenes actually run) to isolate whether Mode was the real blocker before chasing
-		// anything else. Revisit STATIC_MODE (for its lower per-tick cost) once this is confirmed
-		// working and its trigger requirement is found.
+		// default). Kept at FULL_DYNAMIC_MODE for this deferred-spawn retest; revisit STATIC_MODE
+		// (lower per-tick cost, matches the accepted Task 3 preference) once dynamic mode is
+		// confirmed actually working with correct spawn-time configuration.
 		SetWaterlineByteEnumProperty(ShoreActor, TEXT("Mode"), 3);
 
 		const bool bWaterBodySet = SetWaterlineObjectProperty(ShoreActor, TEXT("WaterBody"), WaterlineOceanInstance);
@@ -202,6 +208,8 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 			CaptureVolume->SetBoxExtent(FVector(HalfExtentXYCm, HalfExtentXYCm, 5000.f));
 			bCaptureVolumeResized = true;
 		}
+
+		ShoreActor->FinishSpawning(ShoreTransform);
 
 		ShoreActor->Tags.Add(TEXT("IH.Ocean.Shore"));
 		ShoreManagerInstances.Add(ShoreActor);
