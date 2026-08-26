@@ -67,6 +67,33 @@ namespace
 		}
 		return nullptr;
 	}
+
+	/** Same ParmsSize-safe ProcessEvent pattern established for UDS this session — a bare
+	 * ProcessEvent(Func, nullptr) is unsafe whenever Func->ParmsSize > 0 (common even for
+	 * "no-arg" custom events, which can carry a hidden return/local property). Used here to call
+	 * BP_Shore_Manager_Gen4's own exposed "Force *" custom events (confirmed real via
+	 * BlueprintEditorLibrary.list_events headless introspection) — Mode alone does not appear to
+	 * be sufficient to make the shore manager actually perform its capture/generation. */
+	static bool CallWaterlineFunction(AActor* Actor, const TCHAR* FunctionName)
+	{
+		if (!Actor) { return false; }
+		UFunction* Func = Actor->FindFunction(FName(FunctionName));
+		if (!Func)
+		{
+			return false;
+		}
+		if (Func->ParmsSize > 0)
+		{
+			TArray<uint8> ParamBuffer;
+			ParamBuffer.AddZeroed(Func->ParmsSize);
+			Actor->ProcessEvent(Func, ParamBuffer.GetData());
+		}
+		else
+		{
+			Actor->ProcessEvent(Func, nullptr);
+		}
+		return true;
+	}
 }
 
 AIH_WaterlineOceanAdapter::AIH_WaterlineOceanAdapter()
@@ -233,13 +260,26 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 			bTriggerVolumeResized = true;
 		}
 
+		// Real, non-blind fix candidate: headless BlueprintEditorLibrary graph introspection
+		// (list_events) confirmed three real, implemented custom events on this Blueprint —
+		// "Force Update", "Force Transfer", "Full Dynamic Gen" — clearly designer-exposed manual
+		// trigger points (their names, not a guess). ReceiveTick is confirmed NOT implemented, so
+		// nothing per-frame is driving generation on its own; whatever periodic mechanism exists
+		// (if any) is internal/Timer-based, not something Mode alone visibly kicks off. Called
+		// once, after every property/component is correctly configured, so if these are the real
+		// "run the capture now" entry points, they fire with correct data already in place.
+		const bool bForceUpdateFound = CallWaterlineFunction(ShoreActor, TEXT("Force Update"));
+		const bool bForceTransferFound = CallWaterlineFunction(ShoreActor, TEXT("Force Transfer"));
+		const bool bFullDynamicGenFound = CallWaterlineFunction(ShoreActor, TEXT("Full Dynamic Gen"));
+
 		ShoreActor->Tags.Add(TEXT("IH.Ocean.Shore"));
 		ShoreManagerInstances.Add(ShoreActor);
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureVolumeResized=%d, triggerVolumeResized=%d."),
-			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0);
+			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
+			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
+			bForceUpdateFound ? 1 : 0, bForceTransferFound ? 1 : 0, bFullDynamicGenFound ? 1 : 0);
 	}
 
 	UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter: spawned %d Shore Manager(s) for %d island(s)."),
