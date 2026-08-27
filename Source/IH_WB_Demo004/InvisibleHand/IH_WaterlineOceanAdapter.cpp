@@ -3,6 +3,9 @@
 #include "IH_WaterlineOceanAdapter.h"
 #include "IH_WB_IslandActor.h"
 #include "Components/BoxComponent.h"
+#include "EngineUtils.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/Pawn.h"
 
 namespace
 {
@@ -118,6 +121,51 @@ void AIH_WaterlineOceanAdapter::Tick(float DeltaTime)
 		return;
 	}
 	ShoreManagerDiagnosticLogAccumSec = 0.f;
+
+	// Direct check, not a guess: enumerate every component in the world actually tagged "Ocean_POV"
+	// right now, and where it is — proves whether Get Components by Tag is really resolving to our
+	// tagged Red Cube sphere, or to something else entirely.
+	int32 OceanPovComponentCount = 0;
+	if (UWorld* World = GetWorld())
+	{
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* Actor = *It;
+			if (!IsValid(Actor))
+			{
+				continue;
+			}
+			for (UActorComponent* Comp : Actor->GetComponents())
+			{
+				if (Comp && Comp->ComponentHasTag(FName(TEXT("Ocean_POV"))))
+				{
+					++OceanPovComponentCount;
+					if (USceneComponent* SceneComp = Cast<USceneComponent>(Comp))
+					{
+						const FVector Loc = SceneComp->GetComponentLocation();
+						UE_LOG(LogIH_WB_Demo004, Log,
+							TEXT("Waterline adapter DIAG: Ocean_POV component #%d on actor '%s' at world (%.0f,%.0f,%.0f)."),
+							OceanPovComponentCount, *Actor->GetName(), Loc.X, Loc.Y, Loc.Z);
+					}
+				}
+			}
+		}
+		if (OceanPovComponentCount == 0)
+		{
+			UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: no component in the world is currently tagged Ocean_POV."));
+		}
+
+		if (APlayerController* PC = World->GetFirstPlayerController())
+		{
+			if (APawn* Pawn = PC->GetPawn())
+			{
+				const FVector PawnLoc = Pawn->GetActorLocation();
+				UE_LOG(LogIH_WB_Demo004, Log,
+					TEXT("Waterline adapter DIAG: player pawn '%s' at world (%.0f,%.0f,%.0f)."),
+					*Pawn->GetName(), PawnLoc.X, PawnLoc.Y, PawnLoc.Z);
+			}
+		}
+	}
 
 	for (int32 Index = 0; Index < ShoreManagerInstances.Num(); ++Index)
 	{
