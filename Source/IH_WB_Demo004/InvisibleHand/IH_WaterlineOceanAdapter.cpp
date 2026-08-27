@@ -57,6 +57,24 @@ namespace
 		return false;
 	}
 
+	/** Appends an actor reference to an object-array property (e.g. "Capture Actors"), found
+	 * empty (0 elements) via direct GUI inspection during PIE — RT Shore Final/RT JFA 1 stayed
+	 * 100% black through repeated Force Update calls, and an empty "what am I allowed to render"
+	 * list would explain permanent black regardless of position/timing/resolution. */
+	static bool AddActorToWaterlineActorArrayProperty(AActor* Actor, const TCHAR* PropertyName, AActor* ToAdd)
+	{
+		if (!Actor || !ToAdd) { return false; }
+		FArrayProperty* ArrayProp = CastField<FArrayProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName)));
+		if (!ArrayProp) { return false; }
+		FObjectProperty* InnerObjProp = CastField<FObjectProperty>(ArrayProp->Inner);
+		if (!InnerObjProp) { return false; }
+		void* ArrayPtr = ArrayProp->ContainerPtrToValuePtr<void>(Actor);
+		FScriptArrayHelper ArrayHelper(ArrayProp, ArrayPtr);
+		const int32 NewIndex = ArrayHelper.AddValue();
+		InnerObjProp->SetObjectPropertyValue(ArrayHelper.GetRawPtr(NewIndex), ToAdd);
+		return true;
+	}
+
 	/** Same FByteProperty/FEnumProperty-aware pattern established for UDS this session. */
 	static bool SetWaterlineByteEnumProperty(AActor* Actor, const TCHAR* PropertyName, uint8 Value)
 	{
@@ -405,6 +423,14 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		const bool bWaterBodySet = SetWaterlineObjectProperty(ShoreActor, TEXT("WaterBody"), WaterlineOceanInstance);
 
+		// Found empty (0 elements) via direct GUI inspection during PIE — the Shore Capture's
+		// "what am I allowed to render" list was never populated. An empty list would explain
+		// permanent black capture output regardless of position, timing, or resolution, which is
+		// exactly what every prior diagnostic this session showed. Add the ocean and this Shore
+		// Manager's own island, the two things it actually needs to render.
+		const bool bCaptureActorOceanAdded = AddActorToWaterlineActorArrayProperty(ShoreActor, TEXT("Capture Actors"), WaterlineOceanInstance);
+		const bool bCaptureActorIslandAdded = AddActorToWaterlineActorArrayProperty(ShoreActor, TEXT("Capture Actors"), Island);
+
 		// Two properties confirmed real via headless reflection (Resolution=512, Capture Size=2500,
 		// both vendor defaults) but never touched by any of the six prior fix attempts, since
 		// positioning was the leading suspect until the 2026-08-27 Ocean_POV drift log confirmed the
@@ -464,8 +490,8 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureSizeSet=%d, resolutionSet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
-			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
+			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureActorOceanAdded=%d, captureActorIslandAdded=%d, captureSizeSet=%d, resolutionSet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
+			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureActorOceanAdded ? 1 : 0, bCaptureActorIslandAdded ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
 			bForceUpdateFound ? 1 : 0, bForceTransferFound ? 1 : 0, bFullDynamicGenFound ? 1 : 0);
 	}
 
