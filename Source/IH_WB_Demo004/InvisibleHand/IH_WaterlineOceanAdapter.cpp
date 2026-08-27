@@ -260,6 +260,13 @@ void AIH_WaterlineOceanAdapter::Tick(float DeltaTime)
 			TEXT("Waterline adapter DIAG: Shore Manager '%s' spawnOrigin=(%.0f,%.0f,%.0f) currentLoc=(%.0f,%.0f,%.0f) driftCm=%.0f."),
 			*Shore->GetName(), SpawnOrigin.X, SpawnOrigin.Y, SpawnOrigin.Z, CurrentLoc.X, CurrentLoc.Y, CurrentLoc.Z, DriftCm);
 
+		// RT Shore Final/RT JFA 1 stayed 100% black for a full PIE session with "Force Update"
+		// called only once at spawn. Its "Capture Scene" call sits behind Branch(Shore Warmup) —
+		// the first call finds Shore Warmup false, skips the capture, and only arms a 1s Delay
+		// before setting Shore Warmup=true; the real Capture Scene only runs on a SECOND call made
+		// after that delay. Re-calling it here every 3s tests that directly instead of guessing.
+		CallWaterlineFunction(Shore, TEXT("Force Update"));
+
 		// ReadPixels flushes the GPU — only the first instance each cycle, not all three, to keep
 		// this DEV diagnostic cheap. Checks both render targets named in "Force Update"'s Clear/Resize
 		// calls (confirmed real property names via headless reflection this session).
