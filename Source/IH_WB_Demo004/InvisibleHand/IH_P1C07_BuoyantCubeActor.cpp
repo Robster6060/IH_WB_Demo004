@@ -20,6 +20,8 @@
 
 #include "Components/PrimitiveComponent.h"
 
+#include "Components/SphereComponent.h"
+
 #include "Components/StaticMeshComponent.h"
 
 #include "Engine/World.h"
@@ -155,6 +157,16 @@ AIH_P1C07_BuoyantCubeActor::AIH_P1C07_BuoyantCubeActor()
 	AddP(FVector(0.f, 0.f, -36.f), RInner);
 	AddP(FVector(0.f, 0.f, -22.f), RInner);
 	AddP(FVector(0.f, 0.f, -9.f), RInner);
+
+	// Waterline's BP_Shore_Manager_Gen4 does Get Components by Tag(Component Class=Sphere Collision,
+	// Tag="Ocean_POV") to find where to reposition its capture; no actor in the project carries this
+	// tag today, which is the suspected root cause of the shore manager never tracking a real location.
+	OceanPovSphere = CreateDefaultSubobject<USphereComponent>(TEXT("OceanPovSphere"));
+	OceanPovSphere->SetupAttachment(Mesh);
+	OceanPovSphere->SetSphereRadius(100.f);
+	OceanPovSphere->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	OceanPovSphere->SetGenerateOverlapEvents(false);
+	OceanPovSphere->ComponentTags.Add(FName(TEXT("Ocean_POV")));
 
 }
 

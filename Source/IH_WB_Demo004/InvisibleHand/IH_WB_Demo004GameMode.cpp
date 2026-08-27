@@ -175,11 +175,13 @@ namespace
 	static constexpr float StartCameraDelaySec = 0.55f;
 	static constexpr float MerchantmanSpawnDelaySec = 1.55f;
 
-	/** Dev props anchored at tank center (0, 0). */
-	static constexpr float CubeCenterXCm = 0.f;
-	static constexpr float CubeCenterYCm = 0.f;
+	/** Story Stick stays at tank center (0, 0). */
 	static constexpr float StoryStickCenterXCm = 0.f;
 	static constexpr float StoryStickCenterYCm = 0.f;
+
+	/** Cube offset a few m east of the Story Stick's base so it isn't coincident with it (still adjacent). */
+	static constexpr float CubeCenterXCm = 4000.f;
+	static constexpr float CubeCenterYCm = 0.f;
 
 	/** 100 m buoyant cube half-extent (cm). */
 	static constexpr float BuoyantCubeHalfExtentCm = 5000.f;
@@ -1745,7 +1747,7 @@ void AIH_WB_Demo004GameMode::DeferredSpawnBuoyantCube()
 #endif
 		UE_LOG(
 			LogIH_WB_Demo004, Log,
-			TEXT("P1C07: Static red cube at (%.0f, %.0f, %.0f) cm | bottom Z=%.0f cm (−25 m ASL)."),
+			TEXT("P1C07: Static red cube at (%.0f, %.0f, %.0f) cm | bottom Z=%.0f cm (−25 m ASL) | Ocean_POV sphere tagged."),
 			CubeCenterXCm, CubeCenterYCm, CubeCenterZCm, CubeBottomZCm);
 	}
 }

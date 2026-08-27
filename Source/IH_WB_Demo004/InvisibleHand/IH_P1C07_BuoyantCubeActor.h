@@ -22,6 +22,8 @@ class UStaticMeshComponent;
 
 class UBuoyancyComponent;
 
+class USphereComponent;
+
 
 
 /** 100 m cube with Water-plugin buoyancy; root must be a primitive for UBuoyancyComponent. */
@@ -124,6 +126,14 @@ protected:
 	UPROPERTY(VisibleAnywhere, Category = "P1C07")
 
 	TObjectPtr<UBuoyancyComponent> Buoyancy;
+
+
+
+	/** Tagged "Ocean_POV" — Waterline's BP_Shore_Manager_Gen4 searches for this tag/class to find its follow target. */
+
+	UPROPERTY(VisibleAnywhere, Category = "P1C07")
+
+	TObjectPtr<USphereComponent> OceanPovSphere;
 
 
 
