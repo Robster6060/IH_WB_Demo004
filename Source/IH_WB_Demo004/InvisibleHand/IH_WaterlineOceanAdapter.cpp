@@ -31,6 +31,30 @@ namespace
 		return false;
 	}
 
+	/** Int-typed properties (e.g. "Resolution"/"Capture Size") may compile as FIntProperty or, under
+	 * Large World Coordinates, as a float/double slot — same defensive multi-cast pattern as above. */
+	static bool SetWaterlineIntProperty(AActor* Actor, const TCHAR* PropertyName, int32 Value)
+	{
+		if (!Actor) { return false; }
+		FProperty* Prop = Actor->GetClass()->FindPropertyByName(FName(PropertyName));
+		if (FIntProperty* IntProp = CastField<FIntProperty>(Prop))
+		{
+			IntProp->SetPropertyValue_InContainer(Actor, Value);
+			return true;
+		}
+		if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop))
+		{
+			FloatProp->SetPropertyValue_InContainer(Actor, static_cast<float>(Value));
+			return true;
+		}
+		if (FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Prop))
+		{
+			DoubleProp->SetPropertyValue_InContainer(Actor, static_cast<double>(Value));
+			return true;
+		}
+		return false;
+	}
+
 	/** Same FByteProperty/FEnumProperty-aware pattern established for UDS this session. */
 	static bool SetWaterlineByteEnumProperty(AActor* Actor, const TCHAR* PropertyName, uint8 Value)
 	{
@@ -286,6 +310,7 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		// GetMainLandFootprintRadiusCm() a real circumscribing radius from actual generated cells.
 		const FVector IslandOrigin = Island->GetActorLocation();
 		const float FootprintRadiusCm = Island->GetMainLandFootprintRadiusCm();
+		const float HalfExtentXYCm = FMath::Max(FootprintRadiusCm * 1.3f, 5000.f);
 
 		// Deferred spawn (see InitializeWaterlineOcean's comment) — critical here specifically:
 		// three prior fix attempts (WaterBody wiring, Capture Volume resize, Mode switch) all
@@ -309,6 +334,17 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		const bool bWaterBodySet = SetWaterlineObjectProperty(ShoreActor, TEXT("WaterBody"), WaterlineOceanInstance);
 
+		// Two properties confirmed real via headless reflection (Resolution=512, Capture Size=2500,
+		// both vendor defaults) but never touched by any of the six prior fix attempts, since
+		// positioning was the leading suspect until the 2026-08-27 Ocean_POV drift log confirmed the
+		// shore manager DOES correctly track the camera's world position — closing off positioning as
+		// the cause and leaving the capture/render pipeline as the remaining suspect. Capture Size at
+		// its 2500 (cm) default is tiny next to a 5000m+ island footprint radius — almost certainly
+		// too small an area to capture anything useful of the coastline; sized to the same real
+		// per-island footprint already used for the Capture/Trigger Volume boxes below, not a guess.
+		const bool bCaptureSizeSet = SetWaterlineIntProperty(ShoreActor, TEXT("Capture Size"), FMath::RoundToInt(HalfExtentXYCm * 2.f));
+		const bool bResolutionSet = SetWaterlineIntProperty(ShoreActor, TEXT("Resolution"), 2048);
+
 		// Real regression caught via PIE log (2026-08-26): "Capture Volume"/"Trigger Volume" are
 		// Blueprint-added components (created by the Blueprint's own Construction Script), NOT
 		// native CreateDefaultSubobject components — SpawnActorDeferred() only runs the native
@@ -319,8 +355,6 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		// (plain variable slots that exist regardless of construction phase, so must be set BEFORE
 		// FinishSpawning() so the actor's own init logic sees them in time).
 		ShoreActor->FinishSpawning(ShoreTransform);
-
-		const float HalfExtentXYCm = FMath::Max(FootprintRadiusCm * 1.3f, 5000.f);
 
 		bool bCaptureVolumeResized = false;
 		if (UBoxComponent* CaptureVolume = GetWaterlineBoxComponent(ShoreActor, TEXT("Capture Volume")))
@@ -359,8 +393,8 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
-			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
+			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureSizeSet=%d, resolutionSet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
+			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
 			bForceUpdateFound ? 1 : 0, bForceTransferFound ? 1 : 0, bFullDynamicGenFound ? 1 : 0);
 	}
 
