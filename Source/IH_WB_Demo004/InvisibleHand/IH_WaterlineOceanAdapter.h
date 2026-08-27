@@ -41,6 +41,8 @@ class IH_WB_DEMO004_API AIH_WaterlineOceanAdapter : public AActor
 public:
 	AIH_WaterlineOceanAdapter();
 
+	virtual void Tick(float DeltaTime) override;
+
 	/** Loads and spawns BP_Waterline_Ocean_Gen_4, applies canonical settings via reflection.
 	 * Returns false (and spawns nothing) if the soft-load fails — caller should fall back to the
 	 * legacy ocean, per Phase 2 step 7's fail-safe requirement. */
@@ -68,4 +70,12 @@ private:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AActor>> ShoreManagerInstances;
+
+	/** Location each Shore Manager instance was placed at, recorded right after FinishSpawning() —
+	 * compared against its live GetActorLocation() every few seconds in Tick() so the Output Log
+	 * shows directly whether "Full Dynamic Gen"'s Set Actor Location is moving it, and to where. */
+	UPROPERTY(Transient)
+	TArray<FVector> ShoreManagerSpawnOrigins;
+
+	float ShoreManagerDiagnosticLogAccumSec = 0.f;
 };

@@ -98,8 +98,41 @@ namespace
 
 AIH_WaterlineOceanAdapter::AIH_WaterlineOceanAdapter()
 {
-	PrimaryActorTick.bCanEverTick = false;
+	// Tick only drives the Ocean_POV diagnostic log below — Waterline's own simulation runs itself.
+	PrimaryActorTick.bCanEverTick = true;
 	SetActorEnableCollision(false);
+}
+
+void AIH_WaterlineOceanAdapter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	// DEV diagnostic: BP_Shore_Manager_Gen4's "Full Dynamic Gen" event repositions itself every
+	// timer tick via Set Actor Location, fed by a Get Components by Tag(Sphere Collision,
+	// "Ocean_POV") search. Logging each instance's live location vs. where we spawned it proves,
+	// from the Output Log alone, whether that reposition is actually firing and where it lands —
+	// no manual World Outliner hunting needed. Safe to remove once the Ocean_POV theory is settled.
+	ShoreManagerDiagnosticLogAccumSec += DeltaTime;
+	if (ShoreManagerDiagnosticLogAccumSec < 3.f)
+	{
+		return;
+	}
+	ShoreManagerDiagnosticLogAccumSec = 0.f;
+
+	for (int32 Index = 0; Index < ShoreManagerInstances.Num(); ++Index)
+	{
+		AActor* Shore = ShoreManagerInstances[Index];
+		if (!IsValid(Shore))
+		{
+			continue;
+		}
+		const FVector SpawnOrigin = ShoreManagerSpawnOrigins.IsValidIndex(Index) ? ShoreManagerSpawnOrigins[Index] : FVector::ZeroVector;
+		const FVector CurrentLoc = Shore->GetActorLocation();
+		const float DriftCm = FVector::Dist(SpawnOrigin, CurrentLoc);
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("Waterline adapter DIAG: Shore Manager '%s' spawnOrigin=(%.0f,%.0f,%.0f) currentLoc=(%.0f,%.0f,%.0f) driftCm=%.0f."),
+			*Shore->GetName(), SpawnOrigin.X, SpawnOrigin.Y, SpawnOrigin.Z, CurrentLoc.X, CurrentLoc.Y, CurrentLoc.Z, DriftCm);
+	}
 }
 
 bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
@@ -274,6 +307,7 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		ShoreActor->Tags.Add(TEXT("IH.Ocean.Shore"));
 		ShoreManagerInstances.Add(ShoreActor);
+		ShoreManagerSpawnOrigins.Add(ShoreActor->GetActorLocation());
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
