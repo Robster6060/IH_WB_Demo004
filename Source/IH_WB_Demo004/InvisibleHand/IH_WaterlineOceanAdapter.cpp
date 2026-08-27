@@ -144,6 +144,27 @@ namespace
 			PropertyName, *Actor->GetName(), *Enum->GetName(), *Options);
 	}
 
+	/** Dumps every FBoolProperty on an actor's class (including inherited/Blueprint-added
+	 * variables) with its current value — a complete map of every on/off switch in one pass,
+	 * rather than finding hidden "Enable X" toggles one GUI screenshot at a time. This session has
+	 * already found three separate hidden bool/empty-array gates (Dynamic Foam, Use Foam, Capture
+	 * Actors) by scrolling categories one at a time; this replaces that with a single log line. */
+	static void LogAllWaterlineBoolProperties(AActor* Actor, const TCHAR* Label)
+	{
+		if (!Actor) { return; }
+		FString Dump;
+		int32 Count = 0;
+		for (TFieldIterator<FBoolProperty> It(Actor->GetClass()); It; ++It)
+		{
+			FBoolProperty* BoolProp = *It;
+			const bool Value = BoolProp->GetPropertyValue_InContainer(Actor);
+			Dump += FString::Printf(TEXT("%s=%s "), *BoolProp->GetName(), Value ? TEXT("true") : TEXT("false"));
+			++Count;
+		}
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: %s ('%s') has %d bool properties: %s"),
+			Label, *Actor->GetName(), Count, *Dump);
+	}
+
 	static bool SetWaterlineObjectProperty(AActor* Actor, const TCHAR* PropertyName, UObject* Value)
 	{
 		if (!Actor) { return false; }
@@ -421,6 +442,11 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	OceanActor->Tags.Add(TEXT("IH.Ocean.Primary"));
 	WaterlineOceanInstance = OceanActor;
 
+	// Complete bool-property map of the Ocean actor, post-construction — hunting for any other
+	// hidden "Enable X" gate the same way Dynamic Foam/Use Foam were found, without needing another
+	// round of manual GUI category-scrolling.
+	LogAllWaterlineBoolProperties(OceanActor, TEXT("Ocean actor"));
+
 	UE_LOG(LogIH_WB_Demo004, Log,
 		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d, useFoamSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
 		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0, bUseFoamSet ? 1 : 0);
@@ -537,6 +563,15 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		// (plain variable slots that exist regardless of construction phase, so must be set BEFORE
 		// FinishSpawning() so the actor's own init logic sees them in time).
 		ShoreActor->FinishSpawning(ShoreTransform);
+
+		// Complete bool-property map, first island only (avoids 3x log spam) — same hunt as the
+		// Ocean actor's dump above, this time on the Shore Manager itself, looking specifically for
+		// whatever gates its own dedicated Shore Wave texture system (T_PL_Wave_1_Disp/Nrml) since
+		// the Ocean's Dynamic Foam/Use Foam are confirmed rendering raw JFA data as color instead.
+		if (SpawnedCount == 0)
+		{
+			LogAllWaterlineBoolProperties(ShoreActor, TEXT("Shore Manager"));
+		}
 
 		bool bCaptureVolumeResized = false;
 		if (UBoxComponent* CaptureVolume = GetWaterlineBoxComponent(ShoreActor, TEXT("Capture Volume")))
