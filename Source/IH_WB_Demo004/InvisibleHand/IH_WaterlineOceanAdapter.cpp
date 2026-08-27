@@ -399,12 +399,15 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	// producing real data, transferred repeatedly) with zero visible change at the coastline.
 	const bool bDynamicFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Dynamic Foam"), true);
 
-	// 2026-08-27: enum value 1 resolved to "All Dynamic Foam" — confirmed via live PIE screenshot
-	// to paint foam identically over open water AND dry beach, with zero apparent regard for the
-	// coastline (the exact "wave doesn't know it's on land" symptom the user named directly).
-	// Logging the real enum option list before guessing again, rather than incrementing blind.
+	// 2026-08-27: enum value 1 ("All Dynamic Foam") confirmed via live PIE screenshot to paint foam
+	// identically over open water AND dry beach — no regard for the coastline. Real enum option
+	// list (read via LogWaterlineEnumOptions, since GetNameStringByIndex returned unhelpful
+	// placeholders on this Blueprint-authored enum): [0]="No Dynamic Foam" [1]="All Dynamic Foam"
+	// [2]="CD Dynamic Foam" [3]="Dynamic Foam MAX" (auto-generated sentinel, not a real value).
+	// "CD" is the only untried real option — likely "Capture-Driven," matching how everything else
+	// in this pipeline (Shore Manager, JFA) is capture-based; trying it as the shore-aware mode.
 	LogWaterlineEnumOptions(OceanActor, TEXT("Dynamic Foam Mode"));
-	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 1);
+	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 2);
 
 	// A THIRD, separate foam toggle, found via the same GUI inspection under a different category
 	// ("Ocean Simulation" > "Foam-Sim-VFX", not "Water Simulation") — "Use Foam" was still
