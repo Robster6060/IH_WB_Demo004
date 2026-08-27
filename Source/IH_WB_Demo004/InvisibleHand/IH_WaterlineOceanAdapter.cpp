@@ -285,6 +285,16 @@ void AIH_WaterlineOceanAdapter::Tick(float DeltaTime)
 		// after that delay. Re-calling it here every 3s tests that directly instead of guessing.
 		CallWaterlineFunction(Shore, TEXT("Force Update"));
 
+		// RT Shore Final/RT JFA 1 now confirmed producing real data (100% non-black, real JFA
+		// distance-field signal) after the Capture Actors fix — yet the visible ocean surface still
+		// shows no shore break. Per the Blueprint graph, "Force Transfer" is the event that pushes
+		// captured texture data into the ocean material's Water Surface DYN/Post-Process DYN
+		// parameters. It was only ever called once, at spawn — before Capture Actors was populated
+		// and before the capture was producing anything — so it likely locked in empty/stale data
+		// and never got a second chance to push the real data through. Same fix pattern as Force
+		// Update's Warmup gate: re-call periodically instead of once.
+		CallWaterlineFunction(Shore, TEXT("Force Transfer"));
+
 		// ReadPixels flushes the GPU — only the first instance each cycle, not all three, to keep
 		// this DEV diagnostic cheap. Checks both render targets named in "Force Update"'s Clear/Resize
 		// calls (confirmed real property names via headless reflection this session).
