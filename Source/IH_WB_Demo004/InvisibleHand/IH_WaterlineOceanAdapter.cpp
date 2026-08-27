@@ -363,14 +363,21 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	const bool bDynamicFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Dynamic Foam"), true);
 	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 1);
 
+	// A THIRD, separate foam toggle, found via the same GUI inspection under a different category
+	// ("Ocean Simulation" > "Foam-Sim-VFX", not "Water Simulation") — "Use Foam" was still
+	// unchecked even after Dynamic Foam/Dynamic Foam Mode were confirmed correctly enabled via the
+	// spawn log, with zero visible change. Likely a master switch gating whether the main FFT
+	// ocean material renders any foam/whitecap output at all, independent of Dynamic Foam.
+	const bool bUseFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Use Foam"), true);
+
 	OceanActor->FinishSpawning(SpawnTransform);
 
 	OceanActor->Tags.Add(TEXT("IH.Ocean.Primary"));
 	WaterlineOceanInstance = OceanActor;
 
 	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
-		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0);
+		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d, useFoamSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
+		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0, bUseFoamSet ? 1 : 0);
 
 	return true;
 }
