@@ -6,6 +6,8 @@
 #include "EngineUtils.h"
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Pawn.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "TextureResource.h"
 
 namespace
 {
@@ -93,6 +95,59 @@ namespace
 			return Cast<UBoxComponent>(Prop->GetObjectPropertyValue_InContainer(Actor));
 		}
 		return nullptr;
+	}
+
+	/** Reads a Shore Manager's render-target property (e.g. "RT Shore Final") and logs whether it
+	 * contains any real, non-black pixel data — a direct, material/visibility-independent way to
+	 * tell whether the capture pipeline is actually producing anything, after "Debug Canvas" (the
+	 * vendor's own intended visualization aid) turned out to be hidden (bVisible=False) and still
+	 * carrying the placeholder /Engine/BasicShapeMaterial rather than any real debug material. */
+	static void LogWaterlineRenderTargetStats(AActor* Actor, const TCHAR* PropertyName)
+	{
+		if (!Actor) { return; }
+		FObjectProperty* Prop = CastField<FObjectProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName)));
+		if (!Prop)
+		{
+			UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: property '%s' not found on '%s'."), PropertyName, *Actor->GetName());
+			return;
+		}
+		UTextureRenderTarget2D* RT = Cast<UTextureRenderTarget2D>(Prop->GetObjectPropertyValue_InContainer(Actor));
+		if (!RT)
+		{
+			UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: '%s' on '%s' is None."), PropertyName, *Actor->GetName());
+			return;
+		}
+		FTextureRenderTargetResource* RTResource = RT->GameThread_GetRenderTargetResource();
+		if (!RTResource)
+		{
+			UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: '%s' on '%s' (%dx%d) has no render resource yet."),
+				PropertyName, *Actor->GetName(), RT->SizeX, RT->SizeY);
+			return;
+		}
+		TArray<FColor> Pixels;
+		if (!RTResource->ReadPixels(Pixels) || Pixels.Num() == 0)
+		{
+			UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: '%s' on '%s' (%dx%d) ReadPixels failed/empty."),
+				PropertyName, *Actor->GetName(), RT->SizeX, RT->SizeY);
+			return;
+		}
+		int64 NonBlackCount = 0;
+		int64 SumR = 0, SumG = 0, SumB = 0, SumA = 0;
+		uint8 MaxChannel = 0;
+		for (const FColor& Px : Pixels)
+		{
+			if (Px.R != 0 || Px.G != 0 || Px.B != 0)
+			{
+				++NonBlackCount;
+			}
+			SumR += Px.R; SumG += Px.G; SumB += Px.B; SumA += Px.A;
+			MaxChannel = FMath::Max(MaxChannel, FMath::Max3(Px.R, Px.G, Px.B));
+		}
+		const double InvCount = 1.0 / Pixels.Num();
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("Waterline adapter DIAG: '%s' on '%s' (%dx%d): nonBlackPixels=%lld/%d (%.1f%%), avgRGBA=(%.1f,%.1f,%.1f,%.1f), maxChannel=%d."),
+			PropertyName, *Actor->GetName(), RT->SizeX, RT->SizeY, NonBlackCount, Pixels.Num(),
+			100.0 * NonBlackCount * InvCount, SumR * InvCount, SumG * InvCount, SumB * InvCount, SumA * InvCount, MaxChannel);
 	}
 
 	/** Same ParmsSize-safe ProcessEvent pattern established for UDS this session — a bare
@@ -204,6 +259,15 @@ void AIH_WaterlineOceanAdapter::Tick(float DeltaTime)
 		UE_LOG(LogIH_WB_Demo004, Log,
 			TEXT("Waterline adapter DIAG: Shore Manager '%s' spawnOrigin=(%.0f,%.0f,%.0f) currentLoc=(%.0f,%.0f,%.0f) driftCm=%.0f."),
 			*Shore->GetName(), SpawnOrigin.X, SpawnOrigin.Y, SpawnOrigin.Z, CurrentLoc.X, CurrentLoc.Y, CurrentLoc.Z, DriftCm);
+
+		// ReadPixels flushes the GPU — only the first instance each cycle, not all three, to keep
+		// this DEV diagnostic cheap. Checks both render targets named in "Force Update"'s Clear/Resize
+		// calls (confirmed real property names via headless reflection this session).
+		if (Index == 0)
+		{
+			LogWaterlineRenderTargetStats(Shore, TEXT("RT Shore Final"));
+			LogWaterlineRenderTargetStats(Shore, TEXT("RT JFA 1"));
+		}
 	}
 }
 
