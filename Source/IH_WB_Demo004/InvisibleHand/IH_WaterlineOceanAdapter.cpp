@@ -130,10 +130,15 @@ namespace
 				PropertyName, *Actor->GetName(), Prop ? *Prop->GetClass()->GetName() : TEXT("NOT FOUND"));
 			return;
 		}
+		// GetNameStringByIndex returns the raw internal enumerator name, which for a
+		// Blueprint-authored UUserDefinedEnum is an unhelpful placeholder ("NewEnumerator0") —
+		// confirmed via the first log from this diagnostic. The text actually shown in the Editor
+		// dropdown ("No Dynamic Foam", "All Dynamic Foam") is separate display-name metadata,
+		// read via GetDisplayNameTextByIndex instead.
 		FString Options;
 		for (int32 i = 0; i < Enum->NumEnums(); ++i)
 		{
-			Options += FString::Printf(TEXT("[%lld]=%s "), Enum->GetValueByIndex(i), *Enum->GetNameStringByIndex(i));
+			Options += FString::Printf(TEXT("[%lld]=\"%s\" "), Enum->GetValueByIndex(i), *Enum->GetDisplayNameTextByIndex(i).ToString());
 		}
 		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: '%s' on '%s' real enum '%s' options: %s"),
 			PropertyName, *Actor->GetName(), *Enum->GetName(), *Options);
