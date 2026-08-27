@@ -75,6 +75,19 @@ namespace
 		return true;
 	}
 
+	/** FBoolProperty::SetPropertyValue_InContainer already handles UE's packed-bitfield bool
+	 * representation correctly, so this doesn't need the multi-cast fallback pattern above. */
+	static bool SetWaterlineBoolProperty(AActor* Actor, const TCHAR* PropertyName, bool Value)
+	{
+		if (!Actor) { return false; }
+		if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName))))
+		{
+			BoolProp->SetPropertyValue_InContainer(Actor, Value);
+			return true;
+		}
+		return false;
+	}
+
 	/** Same FByteProperty/FEnumProperty-aware pattern established for UDS this session. */
 	static bool SetWaterlineByteEnumProperty(AActor* Actor, const TCHAR* PropertyName, uint8 Value)
 	{
@@ -341,14 +354,23 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	// explicitly here so canonical sea level Z=0 is never left to an unverified default).
 	const bool bWaterLevelSet = SetWaterlineFloatProperty(OceanActor, TEXT("1 Water Level"), 0.f);
 
+	// Found via direct GUI inspection during PIE: the Ocean's own "Water Simulation" category
+	// ("Enable Shallow Water Sim" already true by vendor default) also exposes "Dynamic Foam"
+	// (unchecked) and "Dynamic Foam Mode" (explicitly "No Dynamic Foam") — a directly-named,
+	// currently-disabled toggle for the visible foam/wave-break effect, distinct from the Shore
+	// Manager's JFA capture pipeline this session has otherwise fully repaired (capture confirmed
+	// producing real data, transferred repeatedly) with zero visible change at the coastline.
+	const bool bDynamicFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Dynamic Foam"), true);
+	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 1);
+
 	OceanActor->FinishSpawning(SpawnTransform);
 
 	OceanActor->Tags.Add(TEXT("IH.Ocean.Primary"));
 	WaterlineOceanInstance = OceanActor;
 
 	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
-		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0);
+		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
+		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0);
 
 	return true;
 }
