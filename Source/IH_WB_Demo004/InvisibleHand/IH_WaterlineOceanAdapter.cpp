@@ -107,6 +107,38 @@ namespace
 		return false;
 	}
 
+	/** Logs the real enum names/values behind a byte/enum property (e.g. "Dynamic Foam Mode") —
+	 * "All Dynamic Foam" turned out to mean "unmasked, everywhere" rather than shore-aware, so the
+	 * next guess needs the actual option list, not another blind increment. Works for both
+	 * FByteProperty (with an attached UEnum) and FEnumProperty. */
+	static void LogWaterlineEnumOptions(AActor* Actor, const TCHAR* PropertyName)
+	{
+		if (!Actor) { return; }
+		FProperty* Prop = Actor->GetClass()->FindPropertyByName(FName(PropertyName));
+		UEnum* Enum = nullptr;
+		if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+		{
+			Enum = ByteProp->Enum;
+		}
+		else if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+		{
+			Enum = EnumProp->GetEnum();
+		}
+		if (!Enum)
+		{
+			UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: '%s' on '%s' has no attached UEnum (Prop=%s)."),
+				PropertyName, *Actor->GetName(), Prop ? *Prop->GetClass()->GetName() : TEXT("NOT FOUND"));
+			return;
+		}
+		FString Options;
+		for (int32 i = 0; i < Enum->NumEnums(); ++i)
+		{
+			Options += FString::Printf(TEXT("[%lld]=%s "), Enum->GetValueByIndex(i), *Enum->GetNameStringByIndex(i));
+		}
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: '%s' on '%s' real enum '%s' options: %s"),
+			PropertyName, *Actor->GetName(), *Enum->GetName(), *Options);
+	}
+
 	static bool SetWaterlineObjectProperty(AActor* Actor, const TCHAR* PropertyName, UObject* Value)
 	{
 		if (!Actor) { return false; }
@@ -361,6 +393,12 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	// Manager's JFA capture pipeline this session has otherwise fully repaired (capture confirmed
 	// producing real data, transferred repeatedly) with zero visible change at the coastline.
 	const bool bDynamicFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Dynamic Foam"), true);
+
+	// 2026-08-27: enum value 1 resolved to "All Dynamic Foam" — confirmed via live PIE screenshot
+	// to paint foam identically over open water AND dry beach, with zero apparent regard for the
+	// coastline (the exact "wave doesn't know it's on land" symptom the user named directly).
+	// Logging the real enum option list before guessing again, rather than incrementing blind.
+	LogWaterlineEnumOptions(OceanActor, TEXT("Dynamic Foam Mode"));
 	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 1);
 
 	// A THIRD, separate foam toggle, found via the same GUI inspection under a different category
