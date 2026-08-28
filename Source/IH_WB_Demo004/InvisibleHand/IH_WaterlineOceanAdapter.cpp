@@ -3,9 +3,6 @@
 #include "IH_WaterlineOceanAdapter.h"
 #include "IH_WB_IslandActor.h"
 #include "Components/BoxComponent.h"
-#include "EngineUtils.h"
-#include "GameFramework/PlayerController.h"
-#include "GameFramework/Pawn.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "TextureResource.h"
 
@@ -269,110 +266,33 @@ namespace
 
 AIH_WaterlineOceanAdapter::AIH_WaterlineOceanAdapter()
 {
-	// Tick only drives the Ocean_POV diagnostic log below — Waterline's own simulation runs itself.
-	PrimaryActorTick.bCanEverTick = true;
+	PrimaryActorTick.bCanEverTick = false;
 	SetActorEnableCollision(false);
 }
 
-void AIH_WaterlineOceanAdapter::Tick(float DeltaTime)
+void AIH_WaterlineOceanAdapter::RefreshShoreManagersBounded()
 {
-	Super::Tick(DeltaTime);
-
-	// DEV diagnostic: BP_Shore_Manager_Gen4's "Full Dynamic Gen" event repositions itself every
-	// timer tick via Set Actor Location, fed by a Get Components by Tag(Sphere Collision,
-	// "Ocean_POV") search. Logging each instance's live location vs. where we spawned it proves,
-	// from the Output Log alone, whether that reposition is actually firing and where it lands —
-	// no manual World Outliner hunting needed. Safe to remove once the Ocean_POV theory is settled.
-	ShoreManagerDiagnosticLogAccumSec += DeltaTime;
-	if (ShoreManagerDiagnosticLogAccumSec < 3.f)
+	--ShoreRefreshCallsRemaining;
+	for (const TObjectPtr<AActor>& Shore : ShoreManagerInstances)
 	{
-		return;
-	}
-	ShoreManagerDiagnosticLogAccumSec = 0.f;
-
-	// Direct check, not a guess: enumerate every component in the world actually tagged "Ocean_POV"
-	// right now, and where it is — proves whether Get Components by Tag is really resolving to our
-	// tagged Red Cube sphere, or to something else entirely.
-	int32 OceanPovComponentCount = 0;
-	if (UWorld* World = GetWorld())
-	{
-		for (TActorIterator<AActor> It(World); It; ++It)
+		if (IsValid(Shore))
 		{
-			AActor* Actor = *It;
-			if (!IsValid(Actor))
-			{
-				continue;
-			}
-			for (UActorComponent* Comp : Actor->GetComponents())
-			{
-				if (Comp && Comp->ComponentHasTag(FName(TEXT("Ocean_POV"))))
-				{
-					++OceanPovComponentCount;
-					if (USceneComponent* SceneComp = Cast<USceneComponent>(Comp))
-					{
-						const FVector Loc = SceneComp->GetComponentLocation();
-						UE_LOG(LogIH_WB_Demo004, Log,
-							TEXT("Waterline adapter DIAG: Ocean_POV component #%d on actor '%s' at world (%.0f,%.0f,%.0f)."),
-							OceanPovComponentCount, *Actor->GetName(), Loc.X, Loc.Y, Loc.Z);
-					}
-				}
-			}
-		}
-		if (OceanPovComponentCount == 0)
-		{
-			UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter DIAG: no component in the world is currently tagged Ocean_POV."));
-		}
-
-		if (APlayerController* PC = World->GetFirstPlayerController())
-		{
-			if (APawn* Pawn = PC->GetPawn())
-			{
-				const FVector PawnLoc = Pawn->GetActorLocation();
-				UE_LOG(LogIH_WB_Demo004, Log,
-					TEXT("Waterline adapter DIAG: player pawn '%s' at world (%.0f,%.0f,%.0f)."),
-					*Pawn->GetName(), PawnLoc.X, PawnLoc.Y, PawnLoc.Z);
-			}
+			CallWaterlineFunction(Shore, TEXT("Force Update"));
+			CallWaterlineFunction(Shore, TEXT("Force Transfer"));
 		}
 	}
-
-	for (int32 Index = 0; Index < ShoreManagerInstances.Num(); ++Index)
+	UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter: bounded Shore Manager refresh fired (%d call(s) remaining after this one)."),
+		ShoreRefreshCallsRemaining);
+	if (ShoreRefreshCallsRemaining <= 0)
 	{
-		AActor* Shore = ShoreManagerInstances[Index];
-		if (!IsValid(Shore))
+		GetWorldTimerManager().ClearTimer(ShoreRefreshTimerHandle);
+		// One-time sanity check on the final bounded call only — confirms capture is still
+		// producing real data without the recurring per-3-seconds GPU-stall cost this diagnostic
+		// used to have.
+		if (ShoreManagerInstances.IsValidIndex(0) && IsValid(ShoreManagerInstances[0]))
 		{
-			continue;
-		}
-		const FVector SpawnOrigin = ShoreManagerSpawnOrigins.IsValidIndex(Index) ? ShoreManagerSpawnOrigins[Index] : FVector::ZeroVector;
-		const FVector CurrentLoc = Shore->GetActorLocation();
-		const float DriftCm = FVector::Dist(SpawnOrigin, CurrentLoc);
-		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Waterline adapter DIAG: Shore Manager '%s' spawnOrigin=(%.0f,%.0f,%.0f) currentLoc=(%.0f,%.0f,%.0f) driftCm=%.0f."),
-			*Shore->GetName(), SpawnOrigin.X, SpawnOrigin.Y, SpawnOrigin.Z, CurrentLoc.X, CurrentLoc.Y, CurrentLoc.Z, DriftCm);
-
-		// RT Shore Final/RT JFA 1 stayed 100% black for a full PIE session with "Force Update"
-		// called only once at spawn. Its "Capture Scene" call sits behind Branch(Shore Warmup) —
-		// the first call finds Shore Warmup false, skips the capture, and only arms a 1s Delay
-		// before setting Shore Warmup=true; the real Capture Scene only runs on a SECOND call made
-		// after that delay. Re-calling it here every 3s tests that directly instead of guessing.
-		CallWaterlineFunction(Shore, TEXT("Force Update"));
-
-		// RT Shore Final/RT JFA 1 now confirmed producing real data (100% non-black, real JFA
-		// distance-field signal) after the Capture Actors fix — yet the visible ocean surface still
-		// shows no shore break. Per the Blueprint graph, "Force Transfer" is the event that pushes
-		// captured texture data into the ocean material's Water Surface DYN/Post-Process DYN
-		// parameters. It was only ever called once, at spawn — before Capture Actors was populated
-		// and before the capture was producing anything — so it likely locked in empty/stale data
-		// and never got a second chance to push the real data through. Same fix pattern as Force
-		// Update's Warmup gate: re-call periodically instead of once.
-		CallWaterlineFunction(Shore, TEXT("Force Transfer"));
-
-		// ReadPixels flushes the GPU — only the first instance each cycle, not all three, to keep
-		// this DEV diagnostic cheap. Checks both render targets named in "Force Update"'s Clear/Resize
-		// calls (confirmed real property names via headless reflection this session).
-		if (Index == 0)
-		{
-			LogWaterlineRenderTargetStats(Shore, TEXT("RT Shore Final"));
-			LogWaterlineRenderTargetStats(Shore, TEXT("RT JFA 1"));
+			LogWaterlineRenderTargetStats(ShoreManagerInstances[0], TEXT("RT Shore Final"));
+			LogWaterlineRenderTargetStats(ShoreManagerInstances[0], TEXT("RT JFA 1"));
 		}
 	}
 }
@@ -558,7 +478,12 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		// too small an area to capture anything useful of the coastline; sized to the same real
 		// per-island footprint already used for the Capture/Trigger Volume boxes below, not a guess.
 		const bool bCaptureSizeSet = SetWaterlineIntProperty(ShoreActor, TEXT("Capture Size"), FMath::RoundToInt(HalfExtentXYCm * 2.f));
-		const bool bResolutionSet = SetWaterlineIntProperty(ShoreActor, TEXT("Resolution"), 2048);
+		// 2026-08-27: reverted from 2048 back to 1024 — 2048 is 16x the vendor's 512-default pixel
+		// count per render target, times 3 shore manager instances, times whatever repeatedly
+		// re-captures it (our own bounded refresh, and/or the Blueprint's own internal "Full
+		// Dynamic Gen" timer) — a real, measured contributor to the PIE sluggishness/memory
+		// pressure the user hit. 1024 is still 4x the vendor default, a reasonable middle ground.
+		const bool bResolutionSet = SetWaterlineIntProperty(ShoreActor, TEXT("Resolution"), 1024);
 
 		// Real regression caught via PIE log (2026-08-26): "Capture Volume"/"Trigger Volume" are
 		// Blueprint-added components (created by the Blueprint's own Construction Script), NOT
@@ -613,7 +538,6 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		ShoreActor->Tags.Add(TEXT("IH.Ocean.Shore"));
 		ShoreManagerInstances.Add(ShoreActor);
-		ShoreManagerSpawnOrigins.Add(ShoreActor->GetActorLocation());
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
@@ -624,4 +548,17 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 	UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter: spawned %d Shore Manager(s) for %d island(s)."),
 		SpawnedCount, Islands.Num());
+
+	// Bounded, timer-based re-call (NOT a per-Tick loop — see RefreshShoreManagersBounded's header
+	// comment for why the previous every-3-seconds-forever version caused real PIE sluggishness/
+	// memory pressure). 4 calls, 2s apart: clears Shore Warmup's one-shot gate (needs a 2nd call
+	// >1s after the 1st) and gives Force Transfer a few chances to push real data once capture is
+	// confirmed producing it, then stops — BP_Shore_Manager_Gen4's own internal "Full Dynamic Gen"
+	// timer (already triggered once above) continues on its own from there.
+	if (SpawnedCount > 0)
+	{
+		ShoreRefreshCallsRemaining = 4;
+		GetWorldTimerManager().SetTimer(ShoreRefreshTimerHandle, this,
+			&AIH_WaterlineOceanAdapter::RefreshShoreManagersBounded, 2.f, true);
+	}
 }
