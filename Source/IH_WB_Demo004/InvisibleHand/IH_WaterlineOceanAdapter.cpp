@@ -437,6 +437,13 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	// ocean material renders any foam/whitecap output at all, independent of Dynamic Foam.
 	const bool bUseFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Use Foam"), true);
 
+	// Found via a full bool-property dump (LogAllWaterlineBoolProperties) of a live PIE instance —
+	// two properties named exactly like master runtime-activation switches, both false: "Sim
+	// Active?" and "Ocean is Live?" (the latter almost certainly what the "Live Ocean" CallInEditor
+	// button — clicked once by the user with no visible effect — is meant to set true).
+	const bool bSimActiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Sim Active?"), true);
+	const bool bOceanIsLiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Ocean is Live?"), true);
+
 	OceanActor->FinishSpawning(SpawnTransform);
 
 	OceanActor->Tags.Add(TEXT("IH.Ocean.Primary"));
@@ -448,8 +455,8 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	LogAllWaterlineBoolProperties(OceanActor, TEXT("Ocean actor"));
 
 	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d, useFoamSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
-		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0, bUseFoamSet ? 1 : 0);
+		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d, useFoamSet=%d, simActiveSet=%d, oceanIsLiveSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
+		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0, bUseFoamSet ? 1 : 0, bSimActiveSet ? 1 : 0, bOceanIsLiveSet ? 1 : 0);
 
 	return true;
 }
