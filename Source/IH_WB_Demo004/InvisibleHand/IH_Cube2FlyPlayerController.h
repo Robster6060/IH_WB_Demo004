@@ -341,4 +341,11 @@ public:
 	static constexpr float PanCmPerMousePixel = 14.f;
 	static constexpr float LookDegPerMousePixel = 0.22f;
 	static constexpr float KeyboardFlySpeedCmPerSec = 28000.f;
+	/** 2026-08-28: 1.0 = fully lock the sea-plane crosshair point during PageUp/PageDown (the exact
+	 * geometric correction), 0.0 = pure vertical with no compensation at all. User-tuned down from
+	 * 1.0 after reporting the full lock felt like "too much forward motion... I fly over my target"
+	 * — a real, expected consequence of exactly re-deriving the ground point every tick at shallower
+	 * pitch angles, not a bug. Re-tune this single constant on further feedback rather than the
+	 * underlying math. */
+	static constexpr float PgUpDownGroundLockStrength = 0.35f;
 };

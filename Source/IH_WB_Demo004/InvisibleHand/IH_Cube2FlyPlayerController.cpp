@@ -1208,10 +1208,20 @@ void AIH_Cube2FlyPlayerController::ApplyKeyboardFlyMovement(float DeltaTime)
 				{
 					const FVector GroundBefore = CamPos + CamForward * TBefore;
 					const FVector GroundAfter = CamPos + FVector(0.f, 0.f, Offset.Z) + CamForward * TAfter;
-					const FVector2D Correction(GroundBefore.X - GroundAfter.X, GroundBefore.Y - GroundAfter.Y);
+					// Scaled by PgUpDownGroundLockStrength — the full (1.0) correction exactly
+					// re-locks the crosshair's ground point every tick, but at shallower pitch
+					// angles that requires large horizontal motion per unit of vertical motion,
+					// which read as "flying over the target" rather than dropping onto it. A
+					// partial blend keeps most of the descent feeling vertical while still easing
+					// the original pulls-back sensation.
+					const FVector2D Correction(
+						(GroundBefore.X - GroundAfter.X) * PgUpDownGroundLockStrength,
+						(GroundBefore.Y - GroundAfter.Y) * PgUpDownGroundLockStrength);
 					// Safety cap: at very shallow (near-horizontal) pitch, T can blow up and so can
-					// the correction — degrade to plain vertical movement rather than a jarring snap.
-					const float MaxCorrectionCm = KeyboardFlySpeedCmPerSec * DeltaTime * 8.f;
+					// the correction — degrade toward plain vertical movement rather than a jarring
+					// snap. Tied to the vertical distance actually covered this tick (not a flat
+					// per-tick-speed multiple) so the cap scales sensibly with DeltaTime/pitch.
+					const float MaxCorrectionCm = FMath::Abs(Offset.Z) * 2.f;
 					if (Correction.SizeSquared() <= FMath::Square(MaxCorrectionCm))
 					{
 						Offset.X += Correction.X;

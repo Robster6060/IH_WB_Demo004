@@ -549,11 +549,16 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		//   "Shore Generation Framerate" = 0.1 (CDO and reference both) — the internal
 		//   capture/composite regen cycle runs once every 10 SECONDS (1/0.1), which is very likely
 		//   the direct, well-evidenced cause of the observed "several seconds of delay/absence."
-		// Raised moderately (5x, to a 2s cycle) rather than maximized — this is the vendor's own
-		// internal timer, not the external per-3-second ReadPixels/Capture Scene diagnostic loop
-		// that caused this session's real PIE memory-pressure crash, but the same lesson (bounded,
-		// not unbounded) still applies. Needs a PIE regression check, not assumed safe.
-		const bool bGenFramerateSet = SetWaterlineFloatProperty(ShoreActor, TEXT("Shore Generation Framerate"), 0.5f);
+		// 2026-08-28: raised further, from 0.5 (2s cycle) to 2.0 (0.5s cycle), per explicit request
+		// to tighten flyover response time — now that distance-based visibility gating (see
+		// UpdateShoreManagerVisibilityGating) keeps at most 1-2 islands' Shore Managers actually in
+		// FULL_DYNAMIC_MODE at once instead of every island simultaneously, this is a materially
+		// different cost profile than when the earlier per-3-second EXTERNAL ReadPixels/Capture
+		// Scene diagnostic loop caused a real PIE memory-pressure crash across 3 always-on
+		// instances — this is the vendor's own lightweight internal Blueprint timer, on at most a
+		// couple of instances. Still a real, untested perf question, not assumed free — watch for
+		// regression on the next PIE pass.
+		const bool bGenFramerateSet = SetWaterlineFloatProperty(ShoreActor, TEXT("Shore Generation Framerate"), 2.0f);
 
 		// "Trigger Volume Extent" (100,100,32cm vendor default, also confirmed untouched/matching
 		// the reference) is a SEPARATE plain variable from the live "Trigger Volume" BoxComponent
@@ -657,8 +662,12 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		// Ongoing (not bounded — runs for the whole session), but still a cheap periodic timer, not
 		// per-Tick. See UpdateShoreManagerVisibilityGating's header comment (Q1/Q2, Observation 1).
+		// 2026-08-28: tightened from 1.0s to 0.25s per explicit request to reduce flyover pop-in
+		// latency — this check is plain game-thread vector math against the camera transform (no
+		// rendering/GPU work involved), so quadrupling its frequency is cheap regardless of how
+		// many islands exist.
 		GetWorldTimerManager().SetTimer(ShoreVisibilityGateTimerHandle, this,
-			&AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating, 1.f, true);
+			&AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating, 0.25f, true);
 	}
 }
 
