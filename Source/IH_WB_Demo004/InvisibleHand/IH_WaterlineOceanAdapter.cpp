@@ -192,6 +192,31 @@ namespace
 		return true;
 	}
 
+	/** Replaces a Shore Manager's render-target property (e.g. "RT Shore Final") with a private,
+	 * per-instance duplicate of whatever it currently points at — confirmed via headless reflection
+	 * that these default to fixed, SHARED content-browser assets (/Game/Waterline/8_Ocean_Shore/
+	 * Shore_RTs/RT_Shore.RT_Shore etc.), the same four assets for every BP_Shore_Manager_Gen4
+	 * instance. The native reference demo only ever places one Shore Manager, so this never
+	 * surfaced there; IH_WB_Demo004 spawns one per island, and if the Blueprint's own
+	 * Construction Script/BeginPlay doesn't already replace these with fresh per-instance render
+	 * targets, every island's capture would silently overwrite every other island's in the same
+	 * shared buffers, every regen cycle — a real candidate for both the coastline-unrelated foam
+	 * blobs and the disappear/reappear cycling (multiple instances racing over one buffer).
+	 * DuplicateObject preserves the source's exact size/format/mip settings, unlike reconstructing
+	 * a new render target from scratch with guessed parameters. */
+	static bool DuplicateWaterlineRenderTargetProperty(AActor* Actor, const TCHAR* PropertyName)
+	{
+		if (!Actor) { return false; }
+		FObjectProperty* Prop = CastField<FObjectProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName)));
+		if (!Prop) { return false; }
+		UTextureRenderTarget2D* Source = Cast<UTextureRenderTarget2D>(Prop->GetObjectPropertyValue_InContainer(Actor));
+		if (!Source) { return false; }
+		UTextureRenderTarget2D* PrivateCopy = DuplicateObject<UTextureRenderTarget2D>(Source, GetTransientPackage());
+		if (!PrivateCopy) { return false; }
+		Prop->SetObjectPropertyValue_InContainer(Actor, PrivateCopy);
+		return true;
+	}
+
 	static UBoxComponent* GetWaterlineBoxComponent(AActor* Actor, const TCHAR* PropertyName)
 	{
 		if (!Actor) { return nullptr; }
@@ -539,6 +564,14 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		// of which one any given internal code path actually reads.
 		const bool bTriggerVolumeExtentSet = SetWaterlineVectorProperty(ShoreActor, TEXT("Trigger Volume Extent"), FVector(HalfExtentXYCm, HalfExtentXYCm, 5000.f));
 
+		// 2026-08-28, Observation 1/2 investigation: give this Shore Manager its own private render
+		// targets rather than the shared vendor default assets every instance otherwise points at —
+		// see DuplicateWaterlineRenderTargetProperty's header comment for the full reasoning.
+		const bool bRtShoreFinalDup = DuplicateWaterlineRenderTargetProperty(ShoreActor, TEXT("RT Shore Final"));
+		const bool bRtJfa1Dup = DuplicateWaterlineRenderTargetProperty(ShoreActor, TEXT("RT JFA 1"));
+		const bool bRtJfa2Dup = DuplicateWaterlineRenderTargetProperty(ShoreActor, TEXT("RT JFA 2"));
+		const bool bRtShoreCaptureDup = DuplicateWaterlineRenderTargetProperty(ShoreActor, TEXT("RT Shore Capture"));
+
 		// Real regression caught via PIE log (2026-08-26): "Capture Volume"/"Trigger Volume" are
 		// Blueprint-added components (created by the Blueprint's own Construction Script), NOT
 		// native CreateDefaultSubobject components — SpawnActorDeferred() only runs the native
@@ -595,8 +628,8 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureActorIslandAdded=%d, captureSizeSet=%d, resolutionSet=%d, offsetWaterLevelSet=%d, genFramerateSet=%d, triggerVolumeExtentSet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
-			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureActorIslandAdded ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bOffsetWaterLevelSet ? 1 : 0, bGenFramerateSet ? 1 : 0, bTriggerVolumeExtentSet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
+			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureActorIslandAdded=%d, captureSizeSet=%d, resolutionSet=%d, offsetWaterLevelSet=%d, genFramerateSet=%d, triggerVolumeExtentSet=%d, rtShoreFinalDup=%d, rtJfa1Dup=%d, rtJfa2Dup=%d, rtShoreCaptureDup=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
+			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureActorIslandAdded ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bOffsetWaterLevelSet ? 1 : 0, bGenFramerateSet ? 1 : 0, bTriggerVolumeExtentSet ? 1 : 0, bRtShoreFinalDup ? 1 : 0, bRtJfa1Dup ? 1 : 0, bRtJfa2Dup ? 1 : 0, bRtShoreCaptureDup ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
 			bForceUpdateFound ? 1 : 0, bForceTransferFound ? 1 : 0, bFullDynamicGenFound ? 1 : 0);
 	}
 
