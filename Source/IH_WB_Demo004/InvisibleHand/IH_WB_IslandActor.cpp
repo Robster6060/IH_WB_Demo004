@@ -686,13 +686,22 @@ namespace IH_WB_IslandActorPrivate
 		ShelfMeshComp->CreateMeshSection(
 			0, Verts, Tris, Normals, UVs, Colors, Tangents,
 			IHInvisibleHandSpec::IsWwfShelfCollisionEnabled());
-		if (UMaterialInstanceDynamic* Mid = MakeOpaqueShelfCyanMID(Outer))
-		{
-			ShelfMeshComp->SetMaterial(0, Mid);
-		}
-		else if (UMaterialInterface* ShelfMat = LoadShelfBandMaterial())
+		// 2026-08-28: was `MakeOpaqueShelfCyanMID` first, `LoadShelfBandMaterial` (the sand material)
+		// as an "else if" fallback — but MakeOpaqueShelfCyanMID always succeeds (it only needs the
+		// engine's always-present BasicShapeMaterial), so the sand-material branch was structurally
+		// unreachable dead code the entire time, regardless of whether M_IH_ShelfSand itself loaded
+		// or looked correct. This is the real, complete explanation for the earlier "WWF unchanged"
+		// report — not a UV/lighting/water-opacity issue, the material swap was simply never applied.
+		// Swapped to match LoadShelfBandMaterial's own header comment, which already documented the
+		// INTENDED order ("Tried first; falls back to the original flat cyan fill if it fails to
+		// load") that the old branch order never actually implemented.
+		if (UMaterialInterface* ShelfMat = LoadShelfBandMaterial())
 		{
 			ShelfMeshComp->SetMaterial(0, ShelfMat);
+		}
+		else if (UMaterialInstanceDynamic* Mid = MakeOpaqueShelfCyanMID(Outer))
+		{
+			ShelfMeshComp->SetMaterial(0, Mid);
 		}
 		ShelfMeshComp->SetVisibility(true);
 		ShelfMeshComp->SetHiddenInGame(false);
