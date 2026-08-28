@@ -558,7 +558,13 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		// instances — this is the vendor's own lightweight internal Blueprint timer, on at most a
 		// couple of instances. Still a real, untested perf question, not assumed free — watch for
 		// regression on the next PIE pass.
-		const bool bGenFramerateSet = SetWaterlineFloatProperty(ShoreActor, TEXT("Shore Generation Framerate"), 2.0f);
+		// 2026-08-28: raised again, 2.0 (0.5s cycle) -> 6.0 (~0.167s cycle), per real evidence: user
+		// reports the effect is smooth while flying along a coastline but visibly jittery/stuttery
+		// once the camera stops and holds — the classic signature of a discrete periodic update
+		// (this cadence) being masked by continuous camera motion and exposed once that motion
+		// stops. Pushing the cycle short enough that individual steps stop being perceptible even
+		// under a static, close view is the direct fix if this theory holds.
+		const bool bGenFramerateSet = SetWaterlineFloatProperty(ShoreActor, TEXT("Shore Generation Framerate"), 6.0f);
 
 		// "Trigger Volume Extent" (100,100,32cm vendor default, also confirmed untouched/matching
 		// the reference) is a SEPARATE plain variable from the live "Trigger Volume" BoxComponent
