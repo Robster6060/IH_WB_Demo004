@@ -132,8 +132,6 @@ private:
 	void ApplyFlyCameraRotationDelta(float DeltaX, float DeltaY, bool bAllowPitch);
 	void UpdateNavCollisionDebugDraw(float DeltaTime);
 	void TickDevMousePointerEcho(float DeltaTime);
-	void DrawDevIslandClickBursts(UWorld* World, float DeltaTime);
-	void SpawnDevIslandClickBurst(const FVector& WorldLocation);
 
 	bool bMouseLookActive = false;
 	bool bLassoDragCaptureActive = false;
@@ -334,14 +332,6 @@ public:
 
 	bool bNavDebugDrawPersistent = false;
 	float NavDebugDrawRemainingSec = 0.f;
-
-	struct FDevIslandClickBurst
-	{
-		FVector Location = FVector::ZeroVector;
-		float AgeSeconds = 0.f;
-	};
-
-	TArray<FDevIslandClickBurst> ActiveDevClickBursts;
 
 	static constexpr float NavDebugDrawAfterMoveOrderSec = 15.f;
 

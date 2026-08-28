@@ -2145,20 +2145,6 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 			TryGetViewportMousePosition(ReleaseViewportPick);
 		}
 
-		if (bHasViewportMouse)
-		{
-			FVector IslandClickSurface = FVector::ZeroVector;
-			if (TrySampleIslandSurfaceAtScreen(ReleaseViewportPick, IslandClickSurface))
-			{
-				SpawnDevIslandClickBurst(IslandClickSurface);
-			}
-			else if (BuildPalette && BuildPalette->IsStructureBuildDragActive()
-				&& BuildPalette->HasValidDragGhostLocation())
-			{
-				SpawnDevIslandClickBurst(BuildPalette->GetDragPlacementActorOrigin());
-			}
-		}
-
 		if (bIslandDragActive)
 		{
 			const int32 FinishedDragIndex = IslandDragIndex;
@@ -2378,6 +2364,8 @@ bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& 
 	FVector WorldDirection;
 	FVector CandidatePoint = FVector::ZeroVector;
 	bool bFoundCandidate = false;
+	FVector RawHitPointDiag = FVector::ZeroVector;
+	const TCHAR* PathDiag = TEXT("none");
 	if (DeprojectScreenToWorldRay(ScreenPos, WorldOrigin, WorldDirection))
 	{
 		const FVector TraceEnd = WorldOrigin + WorldDirection * 5.0e8f;
@@ -2404,6 +2392,8 @@ bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& 
 			{
 				CandidatePoint = OpenOceanDest;
 				bFoundCandidate = true;
+				RawHitPointDiag = Hit.ImpactPoint;
+				PathDiag = TEXT("trace");
 				break;
 			}
 		}
@@ -2418,6 +2408,8 @@ bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& 
 				{
 					CandidatePoint = OpenOceanDest;
 					bFoundCandidate = true;
+					RawHitPointDiag = PlanePoint;
+					PathDiag = TEXT("planeFallback");
 				}
 			}
 		}
@@ -2428,6 +2420,15 @@ bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& 
 		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Place Ship: resolve failed — keep Click Water mode"));
 		return false;
 	}
+
+	// DEV diagnostic (2026-08-28): pinpoints exactly where the resolved spawn point diverges from
+	// the click, for the "ship spawns out of frame" regression — screen input, which resolution
+	// path fired, the raw (pre-ResolveOpenOceanMoveDestination) hit point, and the final candidate.
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("Place Ship DIAG: screenPos=(%.0f,%.0f) path=%s rawHit=(%.0f,%.0f,%.0f) candidate=(%.0f,%.0f,%.0f)"),
+		ScreenPos.X, ScreenPos.Y, PathDiag,
+		RawHitPointDiag.X, RawHitPointDiag.Y, RawHitPointDiag.Z,
+		CandidatePoint.X, CandidatePoint.Y, CandidatePoint.Z);
 
 	const float WaterlineOffsetCm =
 		GetDefault<AIH_P1C07_MerchantmanShipActor>()->DefaultWaterlineOffsetZCm;
@@ -2722,67 +2723,6 @@ void AIH_Cube2FlyPlayerController::UpdateNavCollisionDebugDraw(float DeltaTime)
 	}
 }
 
-void AIH_Cube2FlyPlayerController::SpawnDevIslandClickBurst(const FVector& WorldLocation)
-{
-	FDevIslandClickBurst Burst;
-	Burst.Location = WorldLocation;
-	Burst.AgeSeconds = 0.f;
-	ActiveDevClickBursts.Add(Burst);
-	if (ActiveDevClickBursts.Num() > 16)
-	{
-		ActiveDevClickBursts.RemoveAt(0, ActiveDevClickBursts.Num() - 16);
-	}
-	UE_LOG(LogIH_WB_Demo004, Log, TEXT("DevClickBurst spawned at %s"), *WorldLocation.ToString());
-}
-
-void AIH_Cube2FlyPlayerController::DrawDevIslandClickBursts(UWorld* World, float DeltaTime)
-{
-	if (!World)
-	{
-		return;
-	}
-
-	for (int32 BurstIndex = ActiveDevClickBursts.Num() - 1; BurstIndex >= 0; --BurstIndex)
-	{
-		FDevIslandClickBurst& Burst = ActiveDevClickBursts[BurstIndex];
-		Burst.AgeSeconds += DeltaTime;
-		constexpr float BurstDurationSec = 1.25f;
-		if (Burst.AgeSeconds >= BurstDurationSec)
-		{
-			ActiveDevClickBursts.RemoveAt(BurstIndex);
-			continue;
-		}
-
-		const float NormalizedAge = Burst.AgeSeconds / BurstDurationSec;
-		for (int32 RingIndex = 0; RingIndex < 4; ++RingIndex)
-		{
-			const float RingPhase = FMath::Clamp(NormalizedAge + RingIndex * 0.12f, 0.f, 1.f);
-			const float RadiusCm = FMath::Lerp(200.f, 2500.f, RingPhase);
-			const uint8 Alpha = static_cast<uint8>(FMath::Lerp(255.f, 0.f, RingPhase));
-			DrawDebugSphere(
-				World,
-				Burst.Location + FVector(0.f, 0.f, 60.f * RingIndex),
-				RadiusCm,
-				16,
-				FColor(255, 40, 0, Alpha),
-				false,
-				-1.f,
-				0,
-				20.f);
-		}
-		DrawDebugSphere(
-			World,
-			Burst.Location,
-			200.f,
-			12,
-			FColor(255, 255, 0, 255),
-			false,
-			-1.f,
-			0,
-			25.f);
-	}
-}
-
 void AIH_Cube2FlyPlayerController::DrawDevMousePointerEchoWorld(
 	UWorld* World,
 	const FVector2D& ViewportCur,
@@ -2880,8 +2820,6 @@ void AIH_Cube2FlyPlayerController::TickDevMousePointerEcho(float DeltaTime)
 	{
 		return;
 	}
-
-	DrawDevIslandClickBursts(World, DeltaTime);
 
 	if (IH_Cube2FlyPlayerControllerPrivate::CVarDevDrawMousePointerEcho.GetValueOnGameThread() == 0)
 	{
