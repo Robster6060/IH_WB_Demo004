@@ -1187,7 +1187,41 @@ void AIH_Cube2FlyPlayerController::ApplyKeyboardFlyMovement(float DeltaTime)
 	if (IsFlyKeyDown(EKeys::Q) || IsFlyKeyDown(EKeys::LeftControl) || IsFlyKeyDown(EKeys::PageDown)) Wish -= FVector::UpVector;
 	if (!Wish.IsNearlyZero(1e-4f))
 	{
-		GetPawn()->AddActorWorldOffset(Wish.GetSafeNormal() * KeyboardFlySpeedCmPerSec * DeltaTime);
+		FVector Offset = Wish.GetSafeNormal() * KeyboardFlySpeedCmPerSec * DeltaTime;
+
+		// 2026-08-28, Task 1 (PgUp/PgDn "pulls back"): with a fixed downward camera pitch, the
+		// point where the view ray crosses the sea-level plane (Z=0, same convention as
+		// TryGetWorldPointOnWaterPlane) recedes horizontally as altitude drops — pure trigonometry
+		// (T = -CamZ/ForwardZ grows as CamZ shrinks) — even though the pawn only ever translates
+		// straight up/down. That recession reads exactly as the camera pulling back on PageDown.
+		// Compensates by nudging the pawn horizontally so the SAME ground point stays under the
+		// crosshair, without touching pitch/yaw (mouse-look stays fully player-controlled).
+		if (!FMath::IsNearlyZero(Offset.Z))
+		{
+			const FVector CamForward = GetControlRotation().Vector();
+			if (!FMath::IsNearlyZero(CamForward.Z))
+			{
+				const FVector CamPos = GetPawn()->GetActorLocation();
+				const float TBefore = -CamPos.Z / CamForward.Z;
+				const float TAfter = -(CamPos.Z + Offset.Z) / CamForward.Z;
+				if (TBefore > 0.f && TAfter > 0.f)
+				{
+					const FVector GroundBefore = CamPos + CamForward * TBefore;
+					const FVector GroundAfter = CamPos + FVector(0.f, 0.f, Offset.Z) + CamForward * TAfter;
+					const FVector2D Correction(GroundBefore.X - GroundAfter.X, GroundBefore.Y - GroundAfter.Y);
+					// Safety cap: at very shallow (near-horizontal) pitch, T can blow up and so can
+					// the correction — degrade to plain vertical movement rather than a jarring snap.
+					const float MaxCorrectionCm = KeyboardFlySpeedCmPerSec * DeltaTime * 8.f;
+					if (Correction.SizeSquared() <= FMath::Square(MaxCorrectionCm))
+					{
+						Offset.X += Correction.X;
+						Offset.Y += Correction.Y;
+					}
+				}
+			}
+		}
+
+		GetPawn()->AddActorWorldOffset(Offset);
 	}
 }
 
