@@ -174,6 +174,24 @@ namespace
 		return false;
 	}
 
+	/** FStructProperty-aware setter for FVector-typed plain variables (e.g. "Trigger Volume
+	 * Extent") — distinct from the live UBoxComponent extent set via SetBoxExtent(); this is a
+	 * separate Blueprint variable the vendor's own Construction Script/timer logic may read to
+	 * (re)derive the actual Trigger Volume component's size, independent of whatever the
+	 * component's live extent currently is. */
+	static bool SetWaterlineVectorProperty(AActor* Actor, const TCHAR* PropertyName, const FVector& Value)
+	{
+		if (!Actor) { return false; }
+		FStructProperty* StructProp = CastField<FStructProperty>(Actor->GetClass()->FindPropertyByName(FName(PropertyName)));
+		if (!StructProp || StructProp->Struct != TBaseStructure<FVector>::Get())
+		{
+			return false;
+		}
+		void* ValuePtr = StructProp->ContainerPtrToValuePtr<void>(Actor);
+		*static_cast<FVector*>(ValuePtr) = Value;
+		return true;
+	}
+
 	static UBoxComponent* GetWaterlineBoxComponent(AActor* Actor, const TCHAR* PropertyName)
 	{
 		if (!Actor) { return nullptr; }
@@ -494,6 +512,33 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		const bool bResolutionSet = SetWaterlineIntProperty(ShoreActor, TEXT("Resolution"), 512);
 		const bool bOffsetWaterLevelSet = SetWaterlineFloatProperty(ShoreActor, TEXT("Offset Water Level"), 50.f);
 
+		// 2026-08-28, Observation 1 investigation (beach-relocation delay/disappear-reappear):
+		// list_member_variable_names surfaced two real properties the earlier ~130-name extraction
+		// never tried, since their names weren't known in advance. Both are confirmed, via headless
+		// reflection, to be the UNTOUCHED vendor class default AND to match the confirmed-working
+		// Shore_Map reference instance exactly (neither is an override) — so this is real vendor
+		// design, not an IH-side regression, just one that IH's abrupt beach-to-beach camera jumps
+		// expose more visibly than the reference demo's small, static test scene ever would:
+		//   "Shore Generation Framerate" = 0.1 (CDO and reference both) — the internal
+		//   capture/composite regen cycle runs once every 10 SECONDS (1/0.1), which is very likely
+		//   the direct, well-evidenced cause of the observed "several seconds of delay/absence."
+		// Raised moderately (5x, to a 2s cycle) rather than maximized — this is the vendor's own
+		// internal timer, not the external per-3-second ReadPixels/Capture Scene diagnostic loop
+		// that caused this session's real PIE memory-pressure crash, but the same lesson (bounded,
+		// not unbounded) still applies. Needs a PIE regression check, not assumed safe.
+		const bool bGenFramerateSet = SetWaterlineFloatProperty(ShoreActor, TEXT("Shore Generation Framerate"), 0.5f);
+
+		// "Trigger Volume Extent" (100,100,32cm vendor default, also confirmed untouched/matching
+		// the reference) is a SEPARATE plain variable from the live "Trigger Volume" BoxComponent
+		// resized below, post-FinishSpawning(). If the vendor's own Construction Script/timer logic
+		// re-derives the live component's size from this property on each regen cycle (plausible,
+		// given the same actor also exposes a 10s-default regen timer), our post-spawn component
+		// resize would get silently snapped back to a ~1m box every cycle — a real candidate for the
+		// "abruptly disappears" half of Observation 1. Synced here, pre-FinishSpawning(), to the same
+		// HalfExtentXYCm the live component gets resized to below, so both stay consistent regardless
+		// of which one any given internal code path actually reads.
+		const bool bTriggerVolumeExtentSet = SetWaterlineVectorProperty(ShoreActor, TEXT("Trigger Volume Extent"), FVector(HalfExtentXYCm, HalfExtentXYCm, 5000.f));
+
 		// Real regression caught via PIE log (2026-08-26): "Capture Volume"/"Trigger Volume" are
 		// Blueprint-added components (created by the Blueprint's own Construction Script), NOT
 		// native CreateDefaultSubobject components — SpawnActorDeferred() only runs the native
@@ -550,8 +595,8 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureActorIslandAdded=%d, captureSizeSet=%d, resolutionSet=%d, offsetWaterLevelSet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
-			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureActorIslandAdded ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bOffsetWaterLevelSet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
+			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureActorIslandAdded=%d, captureSizeSet=%d, resolutionSet=%d, offsetWaterLevelSet=%d, genFramerateSet=%d, triggerVolumeExtentSet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
+			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureActorIslandAdded ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bOffsetWaterLevelSet ? 1 : 0, bGenFramerateSet ? 1 : 0, bTriggerVolumeExtentSet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
 			bForceUpdateFound ? 1 : 0, bForceTransferFound ? 1 : 0, bFullDynamicGenFound ? 1 : 0);
 	}
 
