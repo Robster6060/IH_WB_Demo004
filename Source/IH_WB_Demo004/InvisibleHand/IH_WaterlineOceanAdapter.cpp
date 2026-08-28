@@ -6,6 +6,8 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "TextureResource.h"
 #include "Materials/MaterialInterface.h"
+#include "Kismet/GameplayStatics.h"
+#include "Camera/PlayerCameraManager.h"
 
 namespace
 {
@@ -662,6 +664,22 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 void AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating()
 {
+	// 2026-08-28: AActor::WasRecentlyRendered() was the original signal here and had to be
+	// abandoned — the user's own PIE log showed it flapping VISIBLE/NOT VISIBLE on a strict,
+	// mechanical ~1s-on/~3s-off cycle for over a minute straight, for an island they were plainly
+	// standing in front of the whole time (screenshot-confirmed). That's not real camera framing;
+	// it reads as a render-thread/occlusion-query timing artifact on a very large mesh, and my
+	// Mode-toggling on top of it was directly producing the exact disappear/reappear blink being
+	// investigated — a real regression, not a fix. Replaced with camera-to-island DISTANCE,
+	// computed once per check from PlayerCameraManager, entirely on the game thread — no rendering
+	// state involved, so it can't flap on its own the way the render-time signal did.
+	APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0);
+	if (!CameraManager)
+	{
+		return;
+	}
+	const FVector CameraLocation = CameraManager->GetCameraLocation();
+
 	for (int32 Index = 0; Index < ShoreManagerInstances.Num(); ++Index)
 	{
 		AActor* ShoreActor = ShoreManagerInstances[Index];
@@ -671,9 +689,11 @@ void AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating()
 			continue;
 		}
 
-		// Tolerance (1.5s) exceeds this timer's own 1s period so a frame rendered between two
-		// checks is never missed and misread as "not visible."
-		const bool bIsVisible = Island->WasRecentlyRendered(1.5f);
+		// Same HalfExtentXYCm formula already used to size this island's Capture Volume/Trigger
+		// Volume in SpawnShoreManagersForIslands — staying active exactly as far out as those
+		// volumes already reach, rather than inventing a second, inconsistent threshold.
+		const float ActivationRadiusCm = FMath::Max(Island->GetMainLandFootprintRadiusCm() * 1.3f, 5000.f);
+		const bool bIsVisible = FVector::Dist(CameraLocation, Island->GetActorLocation()) <= ActivationRadiusCm;
 		const bool bWasVisible = ShoreManagerWasVisible.IsValidIndex(Index) ? ShoreManagerWasVisible[Index] : true;
 		if (bIsVisible == bWasVisible)
 		{

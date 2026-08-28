@@ -100,9 +100,14 @@ private:
 	 * cheap periodic (NOT per-Tick) timer, NOT per-frame — matches this file's own established
 	 * bounded-timer discipline (see RefreshShoreManagersBounded's header comment on why an
 	 * unbounded per-Tick diagnostic already caused a real PIE memory-pressure crash once this
-	 * session). Toggles "Mode" between FULL_DYNAMIC_MODE (3, the confirmed-working value) when an
-	 * island's mesh is on-screen and STATIC_MODE (0, no ongoing capture cost) when it isn't, so only
-	 * visible islands keep writing into the shared material. */
+	 * session). Toggles "Mode" between FULL_DYNAMIC_MODE (3, the confirmed-working value) when the
+	 * camera is within the island's own activation radius and STATIC_MODE (0, no ongoing capture
+	 * cost) when it isn't, so only nearby islands keep writing into the shared material. Gates on
+	 * camera-to-island DISTANCE, not AActor::WasRecentlyRendered() — that render-thread-derived
+	 * signal was tried first and had to be abandoned: real PIE log evidence showed it flapping on a
+	 * mechanical ~4s cycle for an island plainly on screen the whole time, which was itself
+	 * producing the exact disappear/reappear symptom this gating was meant to fix. Distance is
+	 * plain game-thread math against PlayerCameraManager and cannot flap the same way. */
 	void UpdateShoreManagerVisibilityGating();
 
 	FTimerHandle ShoreVisibilityGateTimerHandle;
