@@ -345,17 +345,24 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 0);
 	const bool bUseFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Use Foam"), false);
 
-	// 2026-08-28: reverted to false. Enabling these (found via LogAllWaterlineBoolProperties, both
-	// off by vendor default) is the prime suspect for two real problems reported after enabling
-	// them: (1) large, camera-centered "pulse" wave artifacts radiating from the Ocean_POV-tracked
-	// point rather than real directional swell, and (2) Place Ship's click-to-place spawning ships
-	// out of frame — TryPlaceMerchantmanAtScreen's primary path is a live line trace against the
-	// ocean's own collision, unlike the flat-plane-math fallback; if these switches turned the
-	// ocean's collision into a live, wave-displaced surface, that would directly corrupt the
-	// resolved click point, explaining both symptoms as one root cause. Never confirmed against the
-	// native Shore_Map reference either way — reverting to the safe default until re-tested.
+	// 2026-08-28: values confirmed directly from Shore_Map's own placed, working
+	// BP_Waterline_Ocean_Gen_4 instance — extracted headlessly via Python EditorAssetLibrary
+	// reflection against IH_WB_WavesDemo01 (not a guess or a screenshot read). The earlier
+	// both-false revert was itself unconfirmed; the real reference has "Sim Active?" false but
+	// "Ocean is Live?" TRUE.
 	const bool bSimActiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Sim Active?"), false);
-	const bool bOceanIsLiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Ocean is Live?"), false);
+	const bool bOceanIsLiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Ocean is Live?"), true);
+
+	// THE likely real root cause of the wave-scale/"huge tsunami pulse" problem, confirmed via the
+	// same extraction: the working reference uses "1 Ocean Simulation Type" =
+	// BAKED_OCEAN_SIMULATION (enum value 1), NOT FFT_SIMULATION (0) — the vendor default this
+	// session has been running with the entire time, confirmed via earlier reflection ("FFT
+	// simulation... confirmed already true by vendor default") without checking whether FFT was
+	// actually the *right* mode. FFT is a live, reactive, real-time simulation; baked is a
+	// pre-computed, stable texture loop — much more likely to hold up correctly at IH's much larger
+	// realm scale, and exactly what the confirmed-working reference actually uses.
+	const bool bSimTypeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("1 Ocean Simulation Type"), 1);
+	const bool bBakedSpeedSet = SetWaterlineFloatProperty(OceanActor, TEXT("1 Baked Ocean Speed"), 30.f);
 
 	// THE fix, per the native Gen4 Shore_Map reference: that level's own placed
 	// BP_Waterline_Ocean_Gen_4 instance overrides "1 Water Surface Material" to MI_WS_Gen4_Shore —
@@ -381,8 +388,8 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	LogAllWaterlineBoolProperties(OceanActor, TEXT("Ocean actor"));
 
 	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d, useFoamSet=%d, simActiveSet=%d, oceanIsLiveSet=%d, shoreMaterialLoaded=%d, shoreMaterialSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
-		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0, bUseFoamSet ? 1 : 0, bSimActiveSet ? 1 : 0, bOceanIsLiveSet ? 1 : 0, ShoreWaterMaterial ? 1 : 0, bShoreMaterialSet ? 1 : 0);
+		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d, useFoamSet=%d, simActiveSet=%d, oceanIsLiveSet=%d, simTypeSet=%d, bakedSpeedSet=%d, shoreMaterialLoaded=%d, shoreMaterialSet=%d."),
+		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0, bUseFoamSet ? 1 : 0, bSimActiveSet ? 1 : 0, bOceanIsLiveSet ? 1 : 0, bSimTypeSet ? 1 : 0, bBakedSpeedSet ? 1 : 0, ShoreWaterMaterial ? 1 : 0, bShoreMaterialSet ? 1 : 0);
 
 	return true;
 }
@@ -470,26 +477,22 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		// Found empty (0 elements) via direct GUI inspection during PIE — the Shore Capture's
 		// "what am I allowed to render" list was never populated. An empty list would explain
 		// permanent black capture output regardless of position, timing, or resolution, which is
-		// exactly what every prior diagnostic this session showed. Add the ocean and this Shore
-		// Manager's own island, the two things it actually needs to render.
-		const bool bCaptureActorOceanAdded = AddActorToWaterlineActorArrayProperty(ShoreActor, TEXT("Capture Actors"), WaterlineOceanInstance);
+		// exactly what every prior diagnostic this session showed. Add this Shore Manager's own
+		// island (the terrain it needs to render) — NOT the ocean: confirmed via a full headless
+		// Python property extraction of Shore_Map's own working, placed Shore Manager instance
+		// (2026-08-28) that its real Capture Actors list is only the level's Landscape + 9
+		// StaticMeshActors (terrain geometry), never the Ocean actor itself.
 		const bool bCaptureActorIslandAdded = AddActorToWaterlineActorArrayProperty(ShoreActor, TEXT("Capture Actors"), Island);
 
-		// Two properties confirmed real via headless reflection (Resolution=512, Capture Size=2500,
-		// both vendor defaults) but never touched by any of the six prior fix attempts, since
-		// positioning was the leading suspect until the 2026-08-27 Ocean_POV drift log confirmed the
-		// shore manager DOES correctly track the camera's world position — closing off positioning as
-		// the cause and leaving the capture/render pipeline as the remaining suspect. Capture Size at
-		// its 2500 (cm) default is tiny next to a 5000m+ island footprint radius — almost certainly
-		// too small an area to capture anything useful of the coastline; sized to the same real
-		// per-island footprint already used for the Capture/Trigger Volume boxes below, not a guess.
-		const bool bCaptureSizeSet = SetWaterlineIntProperty(ShoreActor, TEXT("Capture Size"), FMath::RoundToInt(HalfExtentXYCm * 2.f));
-		// 2026-08-27: reverted from 2048 back to 1024 — 2048 is 16x the vendor's 512-default pixel
-		// count per render target, times 3 shore manager instances, times whatever repeatedly
-		// re-captures it (our own bounded refresh, and/or the Blueprint's own internal "Full
-		// Dynamic Gen" timer) — a real, measured contributor to the PIE sluggishness/memory
-		// pressure the user hit. 1024 is still 4x the vendor default, a reasonable middle ground.
-		const bool bResolutionSet = SetWaterlineIntProperty(ShoreActor, TEXT("Resolution"), 1024);
+		// 2026-08-28: reverted to the vendor defaults, confirmed via the same extraction — the real
+		// working Shore_Map instance uses Capture Size=2500, Resolution=512, NOT scaled to the
+		// island's footprint. This only makes sense given the Shore Manager repositions itself every
+		// tick to follow the camera (the Ocean_POV drift diagnostic already proved this) — it was
+		// never meant to capture an entire island at once, only a small, local area wherever the
+		// camera currently is. The earlier whole-island-footprint scaling was the wrong fix.
+		const bool bCaptureSizeSet = SetWaterlineIntProperty(ShoreActor, TEXT("Capture Size"), 2500);
+		const bool bResolutionSet = SetWaterlineIntProperty(ShoreActor, TEXT("Resolution"), 512);
+		const bool bOffsetWaterLevelSet = SetWaterlineFloatProperty(ShoreActor, TEXT("Offset Water Level"), 50.f);
 
 		// Real regression caught via PIE log (2026-08-26): "Capture Volume"/"Trigger Volume" are
 		// Blueprint-added components (created by the Blueprint's own Construction Script), NOT
@@ -547,8 +550,8 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureActorOceanAdded=%d, captureActorIslandAdded=%d, captureSizeSet=%d, resolutionSet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
-			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureActorOceanAdded ? 1 : 0, bCaptureActorIslandAdded ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
+			TEXT("Waterline adapter: Shore Manager spawned for island '%s' at (%.0f,%.0f), footprintRadiusCm=%.0f, waterBodySet=%d, captureActorIslandAdded=%d, captureSizeSet=%d, resolutionSet=%d, offsetWaterLevelSet=%d, captureVolumeResized=%d, triggerVolumeResized=%d, forceUpdate=%d, forceTransfer=%d, fullDynamicGen=%d."),
+			*Island->GetName(), IslandOrigin.X, IslandOrigin.Y, FootprintRadiusCm, bWaterBodySet ? 1 : 0, bCaptureActorIslandAdded ? 1 : 0, bCaptureSizeSet ? 1 : 0, bResolutionSet ? 1 : 0, bOffsetWaterLevelSet ? 1 : 0, bCaptureVolumeResized ? 1 : 0, bTriggerVolumeResized ? 1 : 0,
 			bForceUpdateFound ? 1 : 0, bForceTransferFound ? 1 : 0, bFullDynamicGenFound ? 1 : 0);
 	}
 
