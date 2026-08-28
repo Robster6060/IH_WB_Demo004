@@ -70,6 +70,16 @@ private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AActor>> ShoreManagerInstances;
 
+	/** Parallel to ShoreManagerInstances (same index = same Shore Manager's owning island) — used
+	 * by UpdateShoreManagerVisibilityGating() to check AActor::WasRecentlyRendered() per island. */
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<AIH_WB_IslandActor>> ShoreManagerIslands;
+
+	/** Parallel to the two arrays above — whether each island was on-screen as of the last
+	 * visibility-gating check, so the gate only acts on real visible/not-visible transitions
+	 * instead of writing the same Mode value every check. */
+	TArray<bool> ShoreManagerWasVisible;
+
 	/** Bounded re-call of Force Update/Force Transfer on every Shore Manager, a few seconds apart,
 	 * for a fixed small count — NOT an indefinite per-Tick loop. Clears "Shore Warmup"'s one-shot
 	 * gate (needs a 2nd call, made >1s after the 1st) and gives Force Transfer a couple of chances
@@ -82,4 +92,18 @@ private:
 
 	FTimerHandle ShoreRefreshTimerHandle;
 	int32 ShoreRefreshCallsRemaining = 0;
+
+	/** 2026-08-28, Observation 1 (Q1/Q2): every island's Shore Manager previously ran its own
+	 * internal regen cycle continuously for the whole session regardless of camera framing, all
+	 * contending for the ONE shared ocean actor/material's shore-texture parameters — confirmed via
+	 * grep there was no visibility/frustum/distance gating anywhere in this file. Checked on a
+	 * cheap periodic (NOT per-Tick) timer, NOT per-frame — matches this file's own established
+	 * bounded-timer discipline (see RefreshShoreManagersBounded's header comment on why an
+	 * unbounded per-Tick diagnostic already caused a real PIE memory-pressure crash once this
+	 * session). Toggles "Mode" between FULL_DYNAMIC_MODE (3, the confirmed-working value) when an
+	 * island's mesh is on-screen and STATIC_MODE (0, no ongoing capture cost) when it isn't, so only
+	 * visible islands keep writing into the shared material. */
+	void UpdateShoreManagerVisibilityGating();
+
+	FTimerHandle ShoreVisibilityGateTimerHandle;
 };

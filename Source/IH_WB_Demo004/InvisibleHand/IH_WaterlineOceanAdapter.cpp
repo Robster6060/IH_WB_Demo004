@@ -625,6 +625,11 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 
 		ShoreActor->Tags.Add(TEXT("IH.Ocean.Shore"));
 		ShoreManagerInstances.Add(ShoreActor);
+		ShoreManagerIslands.Add(Island);
+		// Matches the Mode=3 (FULL_DYNAMIC_MODE) already set on this instance above — the first
+		// visibility-gating check should only act on a REAL visible->not-visible transition, not
+		// treat every freshly-spawned island as if it just became invisible.
+		ShoreManagerWasVisible.Add(true);
 		++SpawnedCount;
 
 		UE_LOG(LogIH_WB_Demo004, Log,
@@ -647,5 +652,58 @@ void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjec
 		ShoreRefreshCallsRemaining = 4;
 		GetWorldTimerManager().SetTimer(ShoreRefreshTimerHandle, this,
 			&AIH_WaterlineOceanAdapter::RefreshShoreManagersBounded, 2.f, true);
+
+		// Ongoing (not bounded — runs for the whole session), but still a cheap periodic timer, not
+		// per-Tick. See UpdateShoreManagerVisibilityGating's header comment (Q1/Q2, Observation 1).
+		GetWorldTimerManager().SetTimer(ShoreVisibilityGateTimerHandle, this,
+			&AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating, 1.f, true);
+	}
+}
+
+void AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating()
+{
+	for (int32 Index = 0; Index < ShoreManagerInstances.Num(); ++Index)
+	{
+		AActor* ShoreActor = ShoreManagerInstances[Index];
+		AIH_WB_IslandActor* Island = ShoreManagerIslands.IsValidIndex(Index) ? ShoreManagerIslands[Index].Get() : nullptr;
+		if (!IsValid(ShoreActor) || !IsValid(Island))
+		{
+			continue;
+		}
+
+		// Tolerance (1.5s) exceeds this timer's own 1s period so a frame rendered between two
+		// checks is never missed and misread as "not visible."
+		const bool bIsVisible = Island->WasRecentlyRendered(1.5f);
+		const bool bWasVisible = ShoreManagerWasVisible.IsValidIndex(Index) ? ShoreManagerWasVisible[Index] : true;
+		if (bIsVisible == bWasVisible)
+		{
+			continue;
+		}
+
+		if (bIsVisible)
+		{
+			// Re-entering view: restore the confirmed-working FULL_DYNAMIC_MODE and kick-start a
+			// fresh capture immediately, rather than waiting on whatever the Blueprint's own
+			// internal timer would otherwise do on its own re-activation.
+			SetWaterlineByteEnumProperty(ShoreActor, TEXT("Mode"), 3);
+			CallWaterlineFunction(ShoreActor, TEXT("Force Update"));
+			CallWaterlineFunction(ShoreActor, TEXT("Force Transfer"));
+		}
+		else
+		{
+			// Leaving view: drop to STATIC_MODE so this instance's own internal capture/regen work
+			// stops contending with whichever island(s) ARE on screen for the one shared ocean
+			// material's shore-texture parameters. Harmless while off-screen even if STATIC_MODE's
+			// own baked-texture fallback (Static Capture/Static Shore) is unconfigured, since
+			// nothing is looking at this island right now.
+			SetWaterlineByteEnumProperty(ShoreActor, TEXT("Mode"), 0);
+		}
+
+		ShoreManagerWasVisible[Index] = bIsVisible;
+
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("Waterline adapter: Shore Manager for island '%s' visibility changed to %s — Mode set to %s."),
+			*Island->GetName(), bIsVisible ? TEXT("VISIBLE") : TEXT("NOT VISIBLE"),
+			bIsVisible ? TEXT("FULL_DYNAMIC_MODE") : TEXT("STATIC_MODE"));
 	}
 }
