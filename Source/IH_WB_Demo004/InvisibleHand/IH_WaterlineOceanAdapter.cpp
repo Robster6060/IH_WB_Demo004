@@ -5,6 +5,7 @@
 #include "Components/BoxComponent.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "TextureResource.h"
+#include "Materials/MaterialInterface.h"
 
 namespace
 {
@@ -332,37 +333,37 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	// explicitly here so canonical sea level Z=0 is never left to an unverified default).
 	const bool bWaterLevelSet = SetWaterlineFloatProperty(OceanActor, TEXT("1 Water Level"), 0.f);
 
-	// Found via direct GUI inspection during PIE: the Ocean's own "Water Simulation" category
-	// ("Enable Shallow Water Sim" already true by vendor default) also exposes "Dynamic Foam"
-	// (unchecked) and "Dynamic Foam Mode" (explicitly "No Dynamic Foam") — a directly-named,
-	// currently-disabled toggle for the visible foam/wave-break effect, distinct from the Shore
-	// Manager's JFA capture pipeline this session has otherwise fully repaired (capture confirmed
-	// producing real data, transferred repeatedly) with zero visible change at the coastline.
-	const bool bDynamicFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Dynamic Foam"), true);
-
-	// 2026-08-27: enum value 1 ("All Dynamic Foam") confirmed via live PIE screenshot to paint foam
-	// identically over open water AND dry beach — no regard for the coastline. Real enum option
-	// list (read via LogWaterlineEnumOptions, since GetNameStringByIndex returned unhelpful
-	// placeholders on this Blueprint-authored enum): [0]="No Dynamic Foam" [1]="All Dynamic Foam"
-	// [2]="CD Dynamic Foam" [3]="Dynamic Foam MAX" (auto-generated sentinel, not a real value).
-	// "CD" is the only untried real option — likely "Capture-Driven," matching how everything else
-	// in this pipeline (Shore Manager, JFA) is capture-based; trying it as the shore-aware mode.
-	LogWaterlineEnumOptions(OceanActor, TEXT("Dynamic Foam Mode"));
-	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 2);
-
-	// A THIRD, separate foam toggle, found via the same GUI inspection under a different category
-	// ("Ocean Simulation" > "Foam-Sim-VFX", not "Water Simulation") — "Use Foam" was still
-	// unchecked even after Dynamic Foam/Dynamic Foam Mode were confirmed correctly enabled via the
-	// spawn log, with zero visible change. Likely a master switch gating whether the main FFT
-	// ocean material renders any foam/whitecap output at all, independent of Dynamic Foam.
-	const bool bUseFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Use Foam"), true);
+	// 2026-08-28: reverted to match the native Gen4 Shore_Map reference exactly (opened directly in
+	// the new IH_WB_WavesDemo01 lab project — see IH_Waterline_Progress.md). That level's own
+	// BP_Waterline_Ocean_Gen_4 instance has Dynamic Foam=false, Dynamic Foam Mode="No Dynamic Foam",
+	// and Use Foam=false — the SAME vendor defaults this session spent Attempts 11/14 turning on —
+	// yet produces real, correctly-composited white shore-break foam. Enabling these was never the
+	// real mechanism; whatever visible response resulted in IH_WB_Demo004 (blotchy, raw JFA-colored,
+	// bleeding onto land before the CD Dynamic Foam Mode fix) was a secondary, unwanted effect.
+	// Left OFF here so the Water Surface Material swap below is tested in isolation.
+	const bool bDynamicFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Dynamic Foam"), false);
+	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 0);
+	const bool bUseFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Use Foam"), false);
 
 	// Found via a full bool-property dump (LogAllWaterlineBoolProperties) of a live PIE instance —
 	// two properties named exactly like master runtime-activation switches, both false: "Sim
 	// Active?" and "Ocean is Live?" (the latter almost certainly what the "Live Ocean" CallInEditor
-	// button — clicked once by the user with no visible effect — is meant to set true).
+	// button — clicked once by the user with no visible effect — is meant to set true). Not directly
+	// checked against the native reference yet, so left enabled rather than reverted blind.
 	const bool bSimActiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Sim Active?"), true);
 	const bool bOceanIsLiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Ocean is Live?"), true);
+
+	// THE fix, per the native Gen4 Shore_Map reference: that level's own placed
+	// BP_Waterline_Ocean_Gen_4 instance overrides "1 Water Surface Material" to MI_WS_Gen4_Shore —
+	// NOT the generic MI_Water_Surface_Gen4 the Blueprint class itself defaults to (confirmed via a
+	// binary string scan of the .uasset). MI_WS_Gen4_Shore sits in the same 3_Shore_Map folder,
+	// orphaned — referenced by nothing anywhere in IH_WB_Demo004 — until now. This is a per-instance
+	// override in the vendor's own working demo, so it must be set explicitly here; spawning the
+	// class alone will never pick it up.
+	UMaterialInterface* ShoreWaterMaterial = Cast<UMaterialInterface>(StaticLoadObject(
+		UMaterialInterface::StaticClass(), nullptr,
+		TEXT("/Game/Waterline/8_Ocean_Shore/3_Shore_Map/MI_WS_Gen4_Shore.MI_WS_Gen4_Shore")));
+	const bool bShoreMaterialSet = SetWaterlineObjectProperty(OceanActor, TEXT("1 Water Surface Material"), ShoreWaterMaterial);
 
 	OceanActor->FinishSpawning(SpawnTransform);
 
@@ -375,8 +376,8 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	LogAllWaterlineBoolProperties(OceanActor, TEXT("Ocean actor"));
 
 	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d, useFoamSet=%d, simActiveSet=%d, oceanIsLiveSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
-		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0, bUseFoamSet ? 1 : 0, bSimActiveSet ? 1 : 0, bOceanIsLiveSet ? 1 : 0);
+		TEXT("Waterline adapter: spawned BP_Waterline_Ocean_Gen_4 ('%s'), waterLevelSet=%d, dynamicFoamSet=%d, dynamicFoamModeSet=%d, useFoamSet=%d, simActiveSet=%d, oceanIsLiveSet=%d, shoreMaterialLoaded=%d, shoreMaterialSet=%d. FFT simulation and Enable Ocean confirmed already true by vendor default (verified via headless reflection, not assumed)."),
+		*OceanActor->GetName(), bWaterLevelSet ? 1 : 0, bDynamicFoamSet ? 1 : 0, bDynamicFoamModeSet ? 1 : 0, bUseFoamSet ? 1 : 0, bSimActiveSet ? 1 : 0, bOceanIsLiveSet ? 1 : 0, ShoreWaterMaterial ? 1 : 0, bShoreMaterialSet ? 1 : 0);
 
 	return true;
 }
