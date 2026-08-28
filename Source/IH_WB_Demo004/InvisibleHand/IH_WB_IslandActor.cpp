@@ -293,13 +293,23 @@ namespace IH_WB_IslandActorPrivate
 	static UMaterialInterface* LoadShelfBandMaterial()
 	{
 		const TCHAR* Paths[] = {
-			// 2026-08-28: IH-owned duplicate of Waterline's native Gen4 beach demo island material
-			// (Island_Material, /Game/Waterline/8_Ocean_Shore/3_Shore_Map/0_Island/) — textured sand
-			// instead of a flat cyan color fill, visible through the now-correctly-translucent
-			// Waterline shore water material, mimicking a real sandy sea floor seen through clear
-			// shallow water. Tried first; falls back to the original flat cyan fill if it fails to
-			// load or looks wrong on ShelfMesh's own UVs (untested against a procedural mesh before
-			// this change — Island_Material was authored for the vendor's own landscape/mesh setup).
+			// 2026-08-28: real root cause of the earlier "WWF unchanged" report was a dead-code
+			// branch at the call site (MakeOpaqueShelfCyanMID always succeeded, so this function was
+			// never reached at all) — fixed separately. Once actually applied, the first entry below
+			// (Waterline's Island_Material, duplicated as M_IH_ShelfSand) rendered as large,
+			// basalt-like ridging rather than fine sand — confirmed via headless inspection to
+			// contain a MaterialExpressionLandscapeLayerCoords node, which only produces meaningful
+			// UVs on an actual ULandscapeComponent, not the UProceduralMeshComponent ShelfMesh is.
+			// Replaced as first choice with M_IH_WwfSand, an IH-owned duplicate of
+			// /Game/watermaterials/Materials/M_Sand — a purpose-built underwater sea-bed sand
+			// material (diffuse+normal textures, animated caustics overlay, wet/dry blending, a
+			// tunable "Tiling" scalar parameter) using ordinary MaterialExpressionTextureCoordinate
+			// nodes, not landscape-specific ones. ShelfMesh's own UVs are P.X/100, P.Y/100 (1 UV
+			// unit = 1 meter, IH_WB_IslandActor.cpp's BuildWwfShelfSection) — the same kind of
+			// meter-scaled convention this material's default Tiling=4.0 was very likely already
+			// tuned against, unlike the landscape-coordinate case. The old Island_Material-derived
+			// entry is kept as a fallback, not removed, in case this new material needs revisiting.
+			TEXT("/Game/InvisibleHand/Materials/M_IH_WwfSand.M_IH_WwfSand"),
 			TEXT("/Game/InvisibleHand/Materials/Waterline/M_IH_ShelfSand.M_IH_ShelfSand"),
 			TEXT("/Game/InvisibleHand/Materials/M_IslandPieBandCyan.M_IslandPieBandCyan"),
 			TEXT("/Game/InvisibleHand/Materials/M_IslandShoreBands.M_IslandShoreBands"),
