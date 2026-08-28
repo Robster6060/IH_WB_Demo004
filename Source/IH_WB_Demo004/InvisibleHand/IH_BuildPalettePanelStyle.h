@@ -34,6 +34,8 @@ namespace IH_BuildPalettePanelStyle
 	static constexpr float TabStripTopMargin =
 		TopRightHudClusterTopY + TopRightHudDevViewApproxH + 12.f;
 	static constexpr float TopRightHudPlaceShipApproxW = 130.f;
+	/** "Mannequin" button — sits between Top Down View and Place Ship. */
+	static constexpr float TopRightHudMannequinApproxW = 150.f;
 	static constexpr float FlyOutWidth = 220.f;
 	/** Gap between fly-out panel right edge and the G/W/B/C/D tab strip. */
 	static constexpr float FlyOutTabStripGap = 3.f;

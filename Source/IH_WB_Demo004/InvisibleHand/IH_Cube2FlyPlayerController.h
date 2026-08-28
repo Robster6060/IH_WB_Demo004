@@ -13,6 +13,7 @@ class UIH_P1C08_GameSpeedWidget;
 class UIH_P1C08_DevViewWidget;
 class UIH_P1C08_CameraAslWidget;
 class UIH_P1C08_PlaceShipWidget;
+class UIH_P1C08_MannequinWidget;
 class UIH_P1C08_TopDownViewWidget;
 class UIH_P1C08_WeatherPreviewWidget;
 class UIH_P1C08_GameDateTimeWidget;
@@ -122,6 +123,7 @@ private:
 	/** Visibility miss fallback: nearest registered ship within ScreenRadiusPx. */
 	AActor* FindNearestRegisteredShipAtScreen(const FVector2D& ScreenPos, float ScreenRadiusPx) const;
 	bool TryPlaceMerchantmanAtScreen(const FVector2D& ScreenPos);
+	bool TryPlaceMannequinAtScreen(const FVector2D& ScreenPos);
 	bool AbsoluteToViewportLocal(const FVector2D& AbsolutePos, FVector2D& OutViewportPos) const;
 	void EnsureViewportKeyboardFocus();
 	bool IsLeftMouseButtonDown() const;
@@ -167,6 +169,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UIH_P1C08_PlaceShipWidget> PlaceShipWidget;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UIH_P1C08_MannequinWidget> MannequinWidget;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UIH_P1C08_TopDownViewWidget> TopDownViewWidget;

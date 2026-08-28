@@ -21,6 +21,9 @@
 #include "IH_P1C08_DevViewWidget.h"
 #include "IH_P1C08_CameraAslWidget.h"
 #include "IH_P1C08_PlaceShipWidget.h"
+#include "IH_P1C08_MannequinWidget.h"
+#include "IH_P1C08_MannequinActor.h"
+#include "Components/CapsuleComponent.h"
 #include "IH_P1C08_TopDownViewWidget.h"
 #include "IH_P1C07_MerchantmanShipActor.h"
 #include "IH_P1C08_WeatherPreviewWidget.h"
@@ -235,6 +238,13 @@ void AIH_Cube2FlyPlayerController::BeginPlay()
 		PlaceWidget->SetIsFocusable(false);
 		PlaceWidget->AddToViewport(4);
 		PlaceShipWidget = PlaceWidget;
+	}
+	if (UIH_P1C08_MannequinWidget* MannequinW =
+			CreateWidget<UIH_P1C08_MannequinWidget>(this, UIH_P1C08_MannequinWidget::StaticClass()))
+	{
+		MannequinW->SetIsFocusable(false);
+		MannequinW->AddToViewport(4);
+		MannequinWidget = MannequinW;
 	}
 	if (UIH_P1C08_TopDownViewWidget* TopDownWidget =
 			CreateWidget<UIH_P1C08_TopDownViewWidget>(this, UIH_P1C08_TopDownViewWidget::StaticClass()))
@@ -1915,6 +1925,11 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 				bLeftMouseConsumedByHUDPanel = true;
 				bConsumedBySliderPanel = true;
 			}
+			else if (MannequinWidget && MannequinWidget->HandleScreenPointerDown(CursorAbsolute))
+			{
+				bLeftMouseConsumedByHUDPanel = true;
+				bConsumedBySliderPanel = true;
+			}
 			else if (TopDownViewWidget && TopDownViewWidget->HandleScreenPointerDown(CursorAbsolute))
 			{
 				// Same one-shot teleport+snap pattern as ih.CameraTopDown (IH_WB_Demo004GameMode.cpp) -
@@ -2445,6 +2460,76 @@ bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& 
 #endif
 }
 
+bool AIH_Cube2FlyPlayerController::TryPlaceMannequinAtScreen(const FVector2D& ScreenPos)
+{
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	if (!MannequinWidget || !MannequinWidget->IsPlaceModeActive())
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	// Opposite of Place Ship's dry-land rejection: accept the first hit tagged as island terrain
+	// (any Z — mannequins stand anywhere on land, unlike the ship's open-ocean-only placement).
+	FVector WorldOrigin;
+	FVector WorldDirection;
+	FVector CandidatePoint = FVector::ZeroVector;
+	bool bFoundCandidate = false;
+	if (DeprojectScreenToWorldRay(ScreenPos, WorldOrigin, WorldDirection))
+	{
+		const FVector TraceEnd = WorldOrigin + WorldDirection * 5.0e8f;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(PlaceMannequinClick), true, this);
+		TArray<FHitResult> Hits;
+		World->LineTraceMultiByChannel(Hits, WorldOrigin, TraceEnd, ECC_Visibility, Params);
+		Hits.Sort([](const FHitResult& A, const FHitResult& B) { return A.Distance < B.Distance; });
+		for (const FHitResult& Hit : Hits)
+		{
+			if (Hit.GetActor() && Hit.GetActor()->ActorHasTag(UIH_P1C07_IslandCollisionSubsystem::IslandActorTag))
+			{
+				CandidatePoint = Hit.ImpactPoint;
+				bFoundCandidate = true;
+				break;
+			}
+		}
+	}
+
+	if (!bFoundCandidate)
+	{
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Mannequin: resolve failed (no land hit) — keep Click Land mode"));
+		return false;
+	}
+
+	const float CapsuleHalfHeightCm =
+		GetDefault<AIH_P1C08_MannequinActor>()->GetCapsuleComponent()->GetScaledCapsuleHalfHeight();
+	const FVector SpawnLoc(CandidatePoint.X, CandidatePoint.Y, CandidatePoint.Z + CapsuleHalfHeightCm);
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AIH_P1C08_MannequinActor* Mannequin = World->SpawnActor<AIH_P1C08_MannequinActor>(
+		AIH_P1C08_MannequinActor::StaticClass(), SpawnLoc, FRotator::ZeroRotator, Params);
+	if (!Mannequin)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Mannequin: SpawnActor failed"));
+		return false;
+	}
+#if WITH_EDITOR
+	Mannequin->SetActorLabel(TEXT("P1C08_Mannequin_Placed"));
+#endif
+	MannequinWidget->ClearPlaceMode();
+	UE_LOG(
+		LogIH_WB_Demo004, Log,
+		TEXT("Mannequin: placed at (%.0f,%.0f,%.0f)"),
+		SpawnLoc.X, SpawnLoc.Y, SpawnLoc.Z);
+	return true;
+#endif
+}
+
 bool AIH_Cube2FlyPlayerController::TryIssueMoveOrderAtScreen(
 	const FVector2D& ScreenPos,
 	UIH_P1C07_ShipRegistrySubsystem* Registry,
@@ -2919,6 +3004,14 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 	if (PlaceShipWidget && PlaceShipWidget->IsPlaceModeActive())
 	{
 		if (TryPlaceMerchantmanAtScreen(ViewportPick))
+		{
+			return;
+		}
+	}
+	// Mannequin: same consume-only-on-success pattern, land instead of water.
+	if (MannequinWidget && MannequinWidget->IsPlaceModeActive())
+	{
+		if (TryPlaceMannequinAtScreen(ViewportPick))
 		{
 			return;
 		}
