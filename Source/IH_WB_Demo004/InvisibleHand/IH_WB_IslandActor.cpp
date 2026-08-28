@@ -293,6 +293,14 @@ namespace IH_WB_IslandActorPrivate
 	static UMaterialInterface* LoadShelfBandMaterial()
 	{
 		const TCHAR* Paths[] = {
+			// 2026-08-28: IH-owned duplicate of Waterline's native Gen4 beach demo island material
+			// (Island_Material, /Game/Waterline/8_Ocean_Shore/3_Shore_Map/0_Island/) — textured sand
+			// instead of a flat cyan color fill, visible through the now-correctly-translucent
+			// Waterline shore water material, mimicking a real sandy sea floor seen through clear
+			// shallow water. Tried first; falls back to the original flat cyan fill if it fails to
+			// load or looks wrong on ShelfMesh's own UVs (untested against a procedural mesh before
+			// this change — Island_Material was authored for the vendor's own landscape/mesh setup).
+			TEXT("/Game/InvisibleHand/Materials/Waterline/M_IH_ShelfSand.M_IH_ShelfSand"),
 			TEXT("/Game/InvisibleHand/Materials/M_IslandPieBandCyan.M_IslandPieBandCyan"),
 			TEXT("/Game/InvisibleHand/Materials/M_IslandShoreBands.M_IslandShoreBands"),
 		};
