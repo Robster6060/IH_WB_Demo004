@@ -345,24 +345,29 @@ bool AIH_WaterlineOceanAdapter::InitializeWaterlineOcean()
 	const bool bDynamicFoamModeSet = SetWaterlineByteEnumProperty(OceanActor, TEXT("Dynamic Foam Mode"), 0);
 	const bool bUseFoamSet = SetWaterlineBoolProperty(OceanActor, TEXT("Use Foam"), false);
 
-	// Found via a full bool-property dump (LogAllWaterlineBoolProperties) of a live PIE instance —
-	// two properties named exactly like master runtime-activation switches, both false: "Sim
-	// Active?" and "Ocean is Live?" (the latter almost certainly what the "Live Ocean" CallInEditor
-	// button — clicked once by the user with no visible effect — is meant to set true). Not directly
-	// checked against the native reference yet, so left enabled rather than reverted blind.
-	const bool bSimActiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Sim Active?"), true);
-	const bool bOceanIsLiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Ocean is Live?"), true);
+	// 2026-08-28: reverted to false. Enabling these (found via LogAllWaterlineBoolProperties, both
+	// off by vendor default) is the prime suspect for two real problems reported after enabling
+	// them: (1) large, camera-centered "pulse" wave artifacts radiating from the Ocean_POV-tracked
+	// point rather than real directional swell, and (2) Place Ship's click-to-place spawning ships
+	// out of frame — TryPlaceMerchantmanAtScreen's primary path is a live line trace against the
+	// ocean's own collision, unlike the flat-plane-math fallback; if these switches turned the
+	// ocean's collision into a live, wave-displaced surface, that would directly corrupt the
+	// resolved click point, explaining both symptoms as one root cause. Never confirmed against the
+	// native Shore_Map reference either way — reverting to the safe default until re-tested.
+	const bool bSimActiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Sim Active?"), false);
+	const bool bOceanIsLiveSet = SetWaterlineBoolProperty(OceanActor, TEXT("Ocean is Live?"), false);
 
 	// THE fix, per the native Gen4 Shore_Map reference: that level's own placed
 	// BP_Waterline_Ocean_Gen_4 instance overrides "1 Water Surface Material" to MI_WS_Gen4_Shore —
 	// NOT the generic MI_Water_Surface_Gen4 the Blueprint class itself defaults to (confirmed via a
-	// binary string scan of the .uasset). MI_WS_Gen4_Shore sits in the same 3_Shore_Map folder,
-	// orphaned — referenced by nothing anywhere in IH_WB_Demo004 — until now. This is a per-instance
-	// override in the vendor's own working demo, so it must be set explicitly here; spawning the
-	// class alone will never pick it up.
+	// binary string scan of the .uasset). Loaded here from an IH-owned duplicate,
+	// MI_IH_Water_Surface_Shore (/Game/InvisibleHand/Materials/Waterline/), not the vendor original
+	// — standing rule: never edit vendor assets under /Game/Waterline directly; this copy is free
+	// to tune (e.g. for the huge-wave/scale-mismatch problem found at IH's realm scale) without
+	// touching vendor content. Duplicated via a headless Python EditorAssetLibrary script, 2026-08-28.
 	UMaterialInterface* ShoreWaterMaterial = Cast<UMaterialInterface>(StaticLoadObject(
 		UMaterialInterface::StaticClass(), nullptr,
-		TEXT("/Game/Waterline/8_Ocean_Shore/3_Shore_Map/MI_WS_Gen4_Shore.MI_WS_Gen4_Shore")));
+		TEXT("/Game/InvisibleHand/Materials/Waterline/MI_IH_Water_Surface_Shore.MI_IH_Water_Surface_Shore")));
 	const bool bShoreMaterialSet = SetWaterlineObjectProperty(OceanActor, TEXT("1 Water Surface Material"), ShoreWaterMaterial);
 
 	OceanActor->FinishSpawning(SpawnTransform);

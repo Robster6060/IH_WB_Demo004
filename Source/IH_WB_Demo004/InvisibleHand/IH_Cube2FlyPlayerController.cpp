@@ -2500,6 +2500,16 @@ bool AIH_Cube2FlyPlayerController::TryPlaceMannequinAtScreen(const FVector2D& Sc
 		}
 	}
 
+	// ShelfMesh (the Sea Shelf WWF band) is SetCollisionEnabled(NoCollision) by design
+	// (IH_WB_IslandActor.cpp) — a line trace can never hit it, so a click over the shelf always
+	// misses the loop above even though it's canonically "walkable" terrain for dev purposes. Fall
+	// back to the same flat water-plane math Place Ship already uses (TryGetWorldPointOnWaterPlane)
+	// so Mannequin can be placed anywhere on the WWF too, standing at approximately sea level there.
+	if (!bFoundCandidate)
+	{
+		bFoundCandidate = TryGetWorldPointOnWaterPlane(ScreenPos, CandidatePoint);
+	}
+
 	if (!bFoundCandidate)
 	{
 		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Mannequin: resolve failed (no land hit) — keep Click Land mode"));
