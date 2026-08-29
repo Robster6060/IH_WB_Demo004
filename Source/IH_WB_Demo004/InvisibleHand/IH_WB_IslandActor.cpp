@@ -13,6 +13,8 @@
 #include "IH_P1C08_IslandNavSubsystem.h"
 #include "IHInvisibleHandDesignSpec.h"
 #include "IHDevViewRuntime.h"
+#include "IH_ASLSlopeBiomeRow.h"
+#include "IH_WorldBuilderDataSubsystem.h"
 #include "Components/ArrowComponent.h"
 #include "ProceduralMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
@@ -242,12 +244,6 @@ namespace IH_WB_IslandActorPrivate
 		}
 
 		OutSelfCrossAfter = CountClosedPolylineSelfCrossings(OutDeepKm);
-	}
-
-	static float TopographySmoothStep(const float Edge0, const float Edge1, const float X)
-	{
-		const float T = FMath::Clamp((X - Edge0) / FMath::Max(Edge1 - Edge0, KINDA_SMALL_NUMBER), 0.f, 1.f);
-		return T * T * (3.f - 2.f * T);
 	}
 
 	static UMaterialInterface* LoadOpaqueLitParentMaterial()
@@ -1697,7 +1693,11 @@ namespace IH_WB_IslandActorPrivate
 		}
 	}
 
-	static UMaterialInstanceDynamic* CreateIslandLitTierMaterial(UObject* Outer, const int32 TierIdx)
+	/** Defined below, alongside the rest of the DT biome classifier — forward-declared here since
+	 * CreateIslandBiomeMaterial needs it and this file compiles top-to-bottom in one pass. */
+	static FLinearColor ParseBiomeHexColor(const FString& HexIn);
+
+	static UMaterialInstanceDynamic* CreateIslandBiomeMaterial(UObject* Outer, const FIHASLSlopeBiomeRow& Row)
 	{
 		UMaterialInterface* Parent = LoadOpaqueLitParentMaterial();
 		if (!Parent || !Outer)
@@ -1709,15 +1709,15 @@ namespace IH_WB_IslandActorPrivate
 		{
 			return nullptr;
 		}
-		const FLinearColor TierColor = IHInvisibleHandSpec::GetTopographyTierDisplayColor(TierIdx);
+		const FLinearColor BiomeColor = ParseBiomeHexColor(Row.biomeColor);
 		const float AlbedoScale = IHDevViewRuntime::IsGrabContrastEnabled()
 			? IHInvisibleHandSpec::TopographyGrabContrastAlbedoScale
 			: 1.f;
 		const FLinearColor DisplayColor(
-			TierColor.R * AlbedoScale,
-			TierColor.G * AlbedoScale,
-			TierColor.B * AlbedoScale,
-			TierColor.A);
+			BiomeColor.R * AlbedoScale,
+			BiomeColor.G * AlbedoScale,
+			BiomeColor.B * AlbedoScale,
+			1.f);
 		static const FName ColorNames[] = {
 			FName(TEXT("Color")), FName(TEXT("BaseColor")), FName(TEXT("TintColor")), FName(TEXT("Vector")),
 		};
@@ -1733,67 +1733,98 @@ namespace IH_WB_IslandActorPrivate
 		return MID;
 	}
 
-	static int32 ComputeVertexTopoTierIndex(
-		const float Zcm,
-		const FVector& Normal,
-		const float SummitTopZCm)
+	/** Artist-authored biome band color, sRGB hex as picked in Excel — must gamma-decode via
+	 * FromSRGBColor, not a naive byte-divide (FColor::ReinterpretAsLinear() would read too dark). */
+	static FLinearColor ParseBiomeHexColor(const FString& HexIn)
 	{
-		const float BeachMinCm = IHInvisibleHandSpec::ShelfFloorMeters * 100.f;
-		const float BeachMaxCm = IHInvisibleHandSpec::TopographyBeachZMaxMeters * 100.f;
-		const float BeachLipSandMaxCm = IHInvisibleHandSpec::TopographyBeachLipSandMaxMeters * 100.f;
-		const float SummitCm = FMath::Max(SummitTopZCm, BeachMaxCm + 1.f);
-		const float AboveBeachSpanCm = FMath::Max(SummitCm - BeachMaxCm, 1.f);
-
-		float SandWeight = TopographySmoothStep(BeachMinCm, BeachMaxCm, Zcm)
-			* (1.f - TopographySmoothStep(BeachMaxCm, SummitCm, Zcm));
-		// Boost Sand on the Gate-2 lip (ASL 0–few m) so beach mesh reads continuous to gold waterline.
-		const float LipSandBoost = TopographySmoothStep(0.f, 50.f, Zcm)
-			* (1.f - TopographySmoothStep(BeachLipSandMaxCm * 0.55f, BeachLipSandMaxCm, Zcm));
-		SandWeight = FMath::Max(SandWeight, LipSandBoost);
-		const float AboveBeach = FMath::Clamp((Zcm - BeachMaxCm) / AboveBeachSpanCm, 0.f, 1.f);
-		const float GrassWeight = TopographySmoothStep(0.05f, 0.22f, AboveBeach)
-			* (1.f - TopographySmoothStep(0.45f, 0.58f, AboveBeach));
-		const float DirtWeight = TopographySmoothStep(0.35f, 0.50f, AboveBeach);
-		const float RockHeightWeight = TopographySmoothStep(0.48f, 0.65f, AboveBeach);
-		const float SnowWeight = TopographySmoothStep(0.75f, 0.90f, AboveBeach);
-		const float SlopeSteepness = 1.f - FMath::Abs(Normal.GetSafeNormal().Z);
-		const float SlopeRockWeight = TopographySmoothStep(
-			IHInvisibleHandSpec::TopographySlopeRockStart,
-			IHInvisibleHandSpec::TopographySlopeRockFull,
-			SlopeSteepness);
-		const float RockWeight = FMath::Max(RockHeightWeight, SlopeRockWeight);
-
-		int32 BestTier = 0;
-		float BestWeight = SandWeight;
-		const float TierWeights[IHInvisibleHandSpec::TopographyTierCount] = {
-			SandWeight, GrassWeight, DirtWeight, RockWeight, SnowWeight};
-		for (int32 TierIdx = 1; TierIdx < IHInvisibleHandSpec::TopographyTierCount; ++TierIdx)
+		FString Hex = HexIn;
+		Hex.RemoveFromStart(TEXT("#"));
+		if (Hex.Len() < 6)
 		{
-			if (TierWeights[TierIdx] > BestWeight)
-			{
-				BestWeight = TierWeights[TierIdx];
-				BestTier = TierIdx;
-			}
+			return FLinearColor::Gray;
 		}
-		// Summit band: snow must beat rock height weight (both saturate ~1). Prefer snow on
-		// high/gentle tops; leave steep faces as rock via cliff force below.
-		if (AboveBeach >= 0.78f && SlopeSteepness < IHInvisibleHandSpec::TopographySlopeRockStart)
-		{
-			BestTier = 4;
-		}
-		return BestTier;
+		return FLinearColor::FromSRGBColor(FColor::FromHex(Hex));
 	}
 
-	static int32 ClassifyTriangleTier(
+	/** Resolves the live DT_ASLSlopeBiome rows once per island build (not per-triangle) — Outer
+	 * must be a UObject whose GetWorld() reaches a live UGameInstance (true for
+	 * AIH_WB_IslandActor). Excludes the SEA LEVEL marker row (bPcgEligible=false, zero-thickness
+	 * divider, not a real band) and sorts by sortOrder so match order is explicit rather than
+	 * relying on DataTable/CSV row order alone. */
+	static TArray<const FIHASLSlopeBiomeRow*> GetBiomeRowsSortedForClassification(UObject* Outer)
+	{
+		TArray<const FIHASLSlopeBiomeRow*> Rows;
+		const UWorld* World = Outer ? Outer->GetWorld() : nullptr;
+		const UGameInstance* GI = World ? World->GetGameInstance() : nullptr;
+		const UIH_WorldBuilderDataSubsystem* Subsystem =
+			GI ? GI->GetSubsystem<UIH_WorldBuilderDataSubsystem>() : nullptr;
+		UDataTable* Table = Subsystem ? Subsystem->GetASLSlopeBiomeTable() : nullptr;
+		if (!Table)
+		{
+			return Rows;
+		}
+		TArray<FIHASLSlopeBiomeRow*> RawRows;
+		Table->GetAllRows(TEXT("IslandBiomeClassify"), RawRows);
+		Rows.Reserve(RawRows.Num());
+		for (const FIHASLSlopeBiomeRow* R : RawRows)
+		{
+			if (R && R->bPcgEligible)
+			{
+				Rows.Add(R);
+			}
+		}
+		Rows.Sort([](const FIHASLSlopeBiomeRow& A, const FIHASLSlopeBiomeRow& B)
+		{
+			return A.sortOrder < B.sortOrder;
+		});
+		return Rows;
+	}
+
+	/** DT-driven replacement for the old 5-tier smoothstep classifier (IH-DEC-052 revised Phase 2
+	 * — decided: full replace, not kept as a fallback). Matches real elevation (meters) + face
+	 * slope (degrees) against DT_ASLSlopeBiome's PCG-eligible rows; first match by sortOrder wins
+	 * (decided tie-break). Latitude zone gating is deliberately skipped for now — Phase 3 (latitude
+	 * selector) doesn't exist yet, so every row is zone-eligible until then (decided). Falls back
+	 * to the nearest ASL-only match (ignoring slope) if no row's slope range covers this point, so
+	 * a real elevation is never left unclassified by a slope-range gap; returns INDEX_NONE only if
+	 * no row's ASL range covers this point at all. */
+	static int32 ClassifyBiomeRowIndex(
+		const TArray<const FIHASLSlopeBiomeRow*>& Rows, const float Zmeters, const float SlopeDeg)
+	{
+		int32 NearestAslOnlyIndex = INDEX_NONE;
+		for (int32 i = 0; i < Rows.Num(); ++i)
+		{
+			const FIHASLSlopeBiomeRow* Row = Rows[i];
+			if (Zmeters < Row->aslLowerM || Zmeters > Row->aslUpperM)
+			{
+				continue;
+			}
+			if (NearestAslOnlyIndex == INDEX_NONE)
+			{
+				NearestAslOnlyIndex = i;
+			}
+			if (Row->bSlopeAgnostic || (SlopeDeg >= Row->minSlopeDeg && SlopeDeg <= Row->maxSlopeDeg))
+			{
+				return i;
+			}
+		}
+		return NearestAslOnlyIndex;
+	}
+
+	/** Per-triangle DT biome match, using real face geometry (average elevation + true face-normal
+	 * slope angle in degrees) rather than per-vertex voting — DT rows are hard-bounded bands, not
+	 * smoothstep-blended tiers, so a single face-level sample is enough and needs no separate
+	 * cliff-force/summit-override special cases (those existed only to compensate for the old
+	 * system's mushy blending; real per-row ASL+slope ranges already cover steep faces and summits
+	 * directly, e.g. Apex Caps 2201-2400m/81-90 deg, Volcanic Rim, the Ore Escarpment rows). */
+	static int32 ClassifyTriangleBiomeRow(
+		const TArray<const FIHASLSlopeBiomeRow*>& Rows,
 		const TArray<FVector>& Vertices,
-		const TArray<FVector>& Normals,
 		const int32 I0,
 		const int32 I1,
 		const int32 I2,
-		const float SummitTopZCm,
 		const bool bWaterlineClamp)
 	{
-		constexpr int32 RockTier = 3;
 		if (!Vertices.IsValidIndex(I0) || !Vertices.IsValidIndex(I1) || !Vertices.IsValidIndex(I2))
 		{
 			return INDEX_NONE;
@@ -1821,85 +1852,28 @@ namespace IH_WB_IslandActorPrivate
 		const float Z1 = bWaterlineClamp ? FMath::Max(P1.Z, 0.f) : P1.Z;
 		const float Z2 = bWaterlineClamp ? FMath::Max(P2.Z, 0.f) : P2.Z;
 
-		int32 Votes[IHInvisibleHandSpec::TopographyTierCount] = {};
-		const int32 Indices[3] = {I0, I1, I2};
-		const float ClampedZ[3] = {Z0, Z1, Z2};
-		for (int32 V = 0; V < 3; ++V)
-		{
-			const int32 Idx = Indices[V];
-			const FVector Normal = Normals.IsValidIndex(Idx) && !Normals[Idx].IsNearlyZero()
-				? Normals[Idx]
-				: FVector::UpVector;
-			const int32 Tier = ComputeVertexTopoTierIndex(ClampedZ[V], Normal, SummitTopZCm);
-			if (Tier >= 0 && Tier < IHInvisibleHandSpec::TopographyTierCount)
-			{
-				++Votes[Tier];
-			}
-		}
-		int32 BestTier = 0;
-		for (int32 TierIdx = 1; TierIdx < IHInvisibleHandSpec::TopographyTierCount; ++TierIdx)
-		{
-			if (Votes[TierIdx] > Votes[BestTier])
-			{
-				BestTier = TierIdx;
-			}
-		}
-
 		const FVector C0(P0.X, P0.Y, Z0);
 		const FVector C1(P1.X, P1.Y, Z1);
 		const FVector C2(P2.X, P2.Y, Z2);
 		const FVector FaceCross = FVector::CrossProduct(C1 - C0, C2 - C0);
 		const float FaceCrossLen = FaceCross.Size();
-		float FaceSlopeSteepness = 0.f;
+		float SlopeDeg = 0.f;
 		if (FaceCrossLen > KINDA_SMALL_NUMBER)
 		{
-			FaceSlopeSteepness = 1.f - FMath::Abs(FaceCross.Z / FaceCrossLen);
+			const float CosSlope = FMath::Clamp(FMath::Abs(FaceCross.Z / FaceCrossLen), 0.f, 1.f);
+			SlopeDeg = FMath::RadiansToDegrees(FMath::Acos(CosSlope));
 		}
 
-		if (IHInvisibleHandSpec::IsCoastTOPO01Step5CliffTriangleRockEnabled())
-		{
-			float AvgVertexSlope = 0.f;
-			float MaxVertexSlope = 0.f;
-			int32 Count = 0;
-			for (const int32 Idx : Indices)
-			{
-				const FVector Normal = Normals.IsValidIndex(Idx) && !Normals[Idx].IsNearlyZero()
-					? Normals[Idx].GetSafeNormal()
-					: FVector::UpVector;
-				const float S = 1.f - FMath::Abs(Normal.Z);
-				AvgVertexSlope += S;
-				MaxVertexSlope = FMath::Max(MaxVertexSlope, S);
-				++Count;
-			}
-			if (Count > 0)
-			{
-				AvgVertexSlope /= static_cast<float>(Count);
-			}
-			const float CliffThresh = IHInvisibleHandSpec::TopographySlopeRockStart;
-			if (FaceSlopeSteepness >= CliffThresh || AvgVertexSlope >= CliffThresh || MaxVertexSlope >= CliffThresh)
-			{
-				BestTier = RockTier;
-			}
-		}
-
-		// Summit snow overrides rock on high non-sheer faces (Volc cone tops / High peaks).
-		{
-			const float BeachMaxCm = IHInvisibleHandSpec::TopographyBeachZMaxMeters * 100.f;
-			const float SummitCm = FMath::Max(SummitTopZCm, BeachMaxCm + 1.f);
-			const float Span = FMath::Max(SummitCm - BeachMaxCm, 1.f);
-			const float MaxZ = FMath::Max3(Z0, Z1, Z2);
-			const float AboveBeach = FMath::Clamp((MaxZ - BeachMaxCm) / Span, 0.f, 1.f);
-			if (AboveBeach >= 0.78f && FaceSlopeSteepness < IHInvisibleHandSpec::TopographySlopeRockFull)
-			{
-				return 4;
-			}
-		}
-
-		return BestTier;
+		const float AvgZmeters = (Z0 + Z1 + Z2) / 3.f / 100.f;
+		return ClassifyBiomeRowIndex(Rows, AvgZmeters, SlopeDeg);
 	}
 
-	/** Split land tris into Sand/Grass/Dirt/Rock/Snow PMC sections with lit Color MIDs. */
-	static void ApplyLitTopographyTier(
+	/** DT-driven biome-color island appearance (IH-DEC-052 revised Phase 2) — replaces the old
+	 * 5-tier Sand/Grass/Dirt/Rock/Snow smoothstep system entirely (decided: full replace, not kept
+	 * as a fallback). One PMC section per distinct DT_ASLSlopeBiome row actually matched on this
+	 * island, each with its own constant-color lit MID sourced from that row's own biomeColor hex
+	 * (the source chart's own artist-authored Biome Name cell fill, not a derived value). */
+	static void ApplyDtBiomeColorBands(
 		UProceduralMeshComponent* Mesh,
 		UObject* Outer,
 		const TArray<FVector>& Vertices,
@@ -1907,17 +1881,23 @@ namespace IH_WB_IslandActorPrivate
 		const TArray<FVector>& Normals,
 		const TArray<FVector2D>& UV0,
 		const TArray<FProcMeshTangent>& Tangents,
-		const float SummitTopZCm,
-		int32 OutTierTriCounts[IHInvisibleHandSpec::TopographyTierCount],
+		int32& OutClassifiedTriCount,
+		int32& OutDistinctBiomeCount,
 		int32& OutMixedClampTris)
 	{
+		OutClassifiedTriCount = 0;
+		OutDistinctBiomeCount = 0;
 		OutMixedClampTris = 0;
-		for (int32 i = 0; i < IHInvisibleHandSpec::TopographyTierCount; ++i)
-		{
-			OutTierTriCounts[i] = 0;
-		}
 		if (!Mesh)
 		{
+			return;
+		}
+
+		const TArray<const FIHASLSlopeBiomeRow*> Rows = GetBiomeRowsSortedForClassification(Outer);
+		if (Rows.Num() == 0)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("IH_WB_IslandActor: DT_ASLSlopeBiome unavailable — IslandMesh left unclassified (no color bands)."));
 			return;
 		}
 
@@ -1933,16 +1913,14 @@ namespace IH_WB_IslandActorPrivate
 			}
 		}
 
-		TArray<TArray<int32>> TierTriangles;
-		TierTriangles.SetNum(IHInvisibleHandSpec::TopographyTierCount);
-
+		TMap<int32, TArray<int32>> RowTriangles;
 		for (int32 TriBase = 0; TriBase + 2 < Triangles.Num(); TriBase += 3)
 		{
 			const int32 I0 = Triangles[TriBase];
 			const int32 I1 = Triangles[TriBase + 1];
 			const int32 I2 = Triangles[TriBase + 2];
-			const int32 Tier = ClassifyTriangleTier(Vertices, Normals, I0, I1, I2, SummitTopZCm, bWaterlineClamp);
-			if (Tier < 0 || Tier >= IHInvisibleHandSpec::TopographyTierCount)
+			const int32 RowIdx = ClassifyTriangleBiomeRow(Rows, Vertices, I0, I1, I2, bWaterlineClamp);
+			if (RowIdx == INDEX_NONE)
 			{
 				continue;
 			}
@@ -1952,20 +1930,21 @@ namespace IH_WB_IslandActorPrivate
 			{
 				++OutMixedClampTris;
 			}
-			TierTriangles[Tier].Add(I0);
-			TierTriangles[Tier].Add(I1);
-			TierTriangles[Tier].Add(I2);
+			TArray<int32>& RowTris = RowTriangles.FindOrAdd(RowIdx);
+			RowTris.Add(I0);
+			RowTris.Add(I1);
+			RowTris.Add(I2);
+			++OutClassifiedTriCount;
 		}
 
 		Mesh->ClearAllMeshSections();
 
-		// Shared vert buffers; per-tier index lists. Collision on every land tier (unitary walk).
+		// Shared vert buffers; per-matched-row index lists. Collision on every section (unitary walk).
 		int32 SectionIdx = 0;
-		for (int32 Tier = 0; Tier < IHInvisibleHandSpec::TopographyTierCount; ++Tier)
+		for (const TPair<int32, TArray<int32>>& Pair : RowTriangles)
 		{
-			const TArray<int32>& TierTris = TierTriangles[Tier];
-			OutTierTriCounts[Tier] = TierTris.Num() / 3;
-			if (TierTris.Num() < 3)
+			const TArray<int32>& RowTris = Pair.Value;
+			if (RowTris.Num() < 3)
 			{
 				continue;
 			}
@@ -1973,15 +1952,17 @@ namespace IH_WB_IslandActorPrivate
 			TArray<FColor> DummyColors;
 			DummyColors.Init(FColor::White, MeshVerts.Num());
 			Mesh->CreateMeshSection(
-				SectionIdx, MeshVerts, TierTris, Normals, UV0, DummyColors, Tangents, true);
-			if (UMaterialInstanceDynamic* Mid = CreateIslandLitTierMaterial(Outer, Tier))
+				SectionIdx, MeshVerts, RowTris, Normals, UV0, DummyColors, Tangents, true);
+			if (UMaterialInstanceDynamic* Mid = CreateIslandBiomeMaterial(Outer, *Rows[Pair.Key]))
 			{
 				Mesh->SetMaterial(SectionIdx, Mid);
 			}
 			++SectionIdx;
+			++OutDistinctBiomeCount;
 		}
 
-		// Fallback: if every tri was omitted, keep a dry-only sand hull for collision.
+		// Fallback: if every tri was omitted (e.g. DT never actually matched anything), keep a
+		// dry-only hull for collision, colored from the first available row rather than left blank.
 		if (SectionIdx == 0 && Triangles.Num() >= 3)
 		{
 			TArray<int32> DryTris;
@@ -2008,7 +1989,7 @@ namespace IH_WB_IslandActorPrivate
 				TArray<FColor> DummyColors;
 				DummyColors.Init(FColor::White, MeshVerts.Num());
 				Mesh->CreateMeshSection(0, MeshVerts, DryTris, Normals, UV0, DummyColors, Tangents, true);
-				if (UMaterialInstanceDynamic* Mid = CreateIslandLitTierMaterial(Outer, 0))
+				if (UMaterialInstanceDynamic* Mid = CreateIslandBiomeMaterial(Outer, *Rows[0]))
 				{
 					Mesh->SetMaterial(0, Mid);
 				}
@@ -2017,8 +1998,8 @@ namespace IH_WB_IslandActorPrivate
 
 		Mesh->ContainsPhysicsTriMeshData(true);
 		UE_LOG(LogTemp, Log,
-			TEXT("IH_WB_IslandActor: IslandMesh waterlineClamp=%d mixedClampTris=%d"),
-			bWaterlineClamp ? 1 : 0, OutMixedClampTris);
+			TEXT("IH_WB_IslandActor: IslandMesh waterlineClamp=%d mixedClampTris=%d classifiedTris=%d distinctBiomes=%d"),
+			bWaterlineClamp ? 1 : 0, OutMixedClampTris, OutClassifiedTriCount, OutDistinctBiomeCount);
 	}
 }
 
@@ -4064,10 +4045,12 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 
 	Tangents.Init(FProcMeshTangent(1.f, 0.f, 0.f), Vertices.Num());
 
-	int32 TierTriCounts[IHInvisibleHandSpec::TopographyTierCount] = {};
+	int32 ClassifiedBiomeTris = 0;
+	int32 DistinctBiomeCount = 0;
 	int32 MixedClampTris = 0;
-	IH_WB_IslandActorPrivate::ApplyLitTopographyTier(
-		IslandMesh, this, Vertices, Triangles, Normals, UV0, Tangents, SummitTopZCm, TierTriCounts, MixedClampTris);
+	IH_WB_IslandActorPrivate::ApplyDtBiomeColorBands(
+		IslandMesh, this, Vertices, Triangles, Normals, UV0, Tangents,
+		ClassifiedBiomeTris, DistinctBiomeCount, MixedClampTris);
 
 	// Diagnostic (plan Addendum 1, Bug 2): MainCoastPolylineLocalCm and ShelfPolylineLocalCm are
 	// each picked independently as "largest loop" from graphs that can have hundreds of loops
@@ -4148,12 +4131,12 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 
 	UE_LOG(LogTemp, Log,
 		TEXT("IH_WB_IslandActor: island=%d cellGraph cells=%d landFraction=%.3f dryAcres=%.0f wwfAcres=%.0f ")
-		TEXT("wwfSlopedBandCells=%d wwfBottomPlaneCells=%d primaryTroughs=%d daughterTroughs=%d loops=%d sandTris=%d ")
-		TEXT("grassTris=%d dirtTris=%d rockTris=%d snowTris=%d shelfTris=%d elapsedS=%.3f"),
+		TEXT("wwfSlopedBandCells=%d wwfBottomPlaneCells=%d primaryTroughs=%d daughterTroughs=%d loops=%d ")
+		TEXT("biomeTris=%d distinctBiomes=%d shelfTris=%d elapsedS=%.3f"),
 		TankIslandIndex, Graph.Num(), LandFraction, DryAcres, WwfFootprintAcres,
 		ShelfSlopedBandCellCount, ShelfBottomPlaneCellCount,
 		PrimaryTroughPaths.Num(), DaughterTroughCount, CoastLoops.Num(),
-		TierTriCounts[0], TierTriCounts[1], TierTriCounts[2], TierTriCounts[3], TierTriCounts[4],
+		ClassifiedBiomeTris, DistinctBiomeCount,
 		ShelfTriCount, FPlatformTime::Seconds() - StartSeconds);
 
 	if (UGameInstance* GI = GetGameInstance())

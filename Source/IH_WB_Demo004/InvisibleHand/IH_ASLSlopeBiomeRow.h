@@ -52,8 +52,9 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	/** Artist-authored display color for this biome band, from the source chart's own Biome Name
 	 * cell fill (Topygraphy Elevation Chart.xlsx, Column I) — not derived or procedural. 6-hex-digit
 	 * RRGGBB, no leading '#' (e.g. "009900" for High Timberland). sRGB as authored in Excel; convert
-	 * via FColor::FromHex() then ReinterpretAsLinear() before feeding a MID's linear color param —
-	 * do not treat the raw hex bytes as already-linear. Reference/visualization metadata, not the
+	 * via FLinearColor::FromSRGBColor(FColor::FromHex(Hex)) before feeding a MID's linear color
+	 * param — FColor::ReinterpretAsLinear() is the wrong call here (naive byte-divide, no gamma
+	 * decode) and would read visibly too dark. Reference/visualization metadata, not the
 	 * primary runtime classifier — ASL/Slope/Zone drive lookup, not biomeColor. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FString biomeColor;
