@@ -20,6 +20,9 @@
 #include "IHCoastGenerationTypes.h"
 #include "IH_P1C07_BuoyantCubeActor.h"
 #include "IH_P1C07_MerchantmanShipActor.h"
+#include "IH_P1C07_CommandableShipActor.h"
+#include "IH_P1C08_MannequinActor.h"
+#include "IH_StructurePlacementActor.h"
 #include "IH_P1C12_OceanPlane.h"
 #include "IHDevViewRuntime.h"
 #include "IH_Cube2FlyPlayerController.h"
@@ -1189,6 +1192,7 @@ void AIH_WB_Demo004GameMode::RegenerateIslandsFromSeed()
 	}
 
 	DestroyAllIslandBaseDevProps();
+	DestroyAllPlacedGameplayActors();
 
 	if (WaterlineOceanAdapter)
 	{
@@ -1558,6 +1562,40 @@ void AIH_WB_Demo004GameMode::DestroyAllIslandBaseDevProps()
 		}
 	}
 	SpawnedIslandBaseDevProps.Reset();
+}
+
+void AIH_WB_Demo004GameMode::DestroyAllPlacedGameplayActors()
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+
+	int32 ShipCount = 0;
+	for (TActorIterator<AIH_P1C07_CommandableShipActor> It(World); It; ++It)
+	{
+		World->DestroyActor(*It, true);
+		++ShipCount;
+	}
+
+	int32 MannequinCount = 0;
+	for (TActorIterator<AIH_P1C08_MannequinActor> It(World); It; ++It)
+	{
+		World->DestroyActor(*It, true);
+		++MannequinCount;
+	}
+
+	int32 StructureCount = 0;
+	for (TActorIterator<AIH_StructurePlacementActor> It(World); It; ++It)
+	{
+		World->DestroyActor(*It, true);
+		++StructureCount;
+	}
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("P1C08: Destroyed %d ship(s), %d Mannequin(s), %d structure(s) ahead of realm regen."),
+		ShipCount, MannequinCount, StructureCount);
 }
 
 void AIH_WB_Demo004GameMode::SpawnIslandBaseDevPropsForSpawnedIslands()

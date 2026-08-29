@@ -79,6 +79,11 @@ protected:
 	void CompactIslandsTowardStoryStickOrigin();
 	void DestroyAllIslandBaseDevProps();
 	void SpawnIslandBaseDevPropsForSpawnedIslands();
+	/** Destroys every player-placed ship, Mannequin, and structure left over from the previous
+	 * seed — none of them are tracked by SpawnedIslands or any regen-aware array, so without this
+	 * they stay behind at their old world-space coordinates (often now underwater or mid-air) once
+	 * a new seed reshapes the realm around them. Called before islands regenerate. */
+	void DestroyAllPlacedGameplayActors();
 	void RefreshTankGeometry(float RealmHalfExtentNSKm);
 
 	UFUNCTION()
