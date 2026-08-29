@@ -24,9 +24,10 @@
  *
  * Features and Resources are merged into a single `features` array (IH-DEC-052 resolution of
  * ASLSlopeBiome002.md's Open Item A — the source data split landform content inconsistently
- * across the two columns with no clear rule for which went where). RGB is dropped (ASLSlopeBiome002.md
- * Open Item B — always equal to grayValue on every row; derive a packed color from grayValue
- * directly if one is ever needed).
+ * across the two columns with no clear rule for which went where). The source chart's GRAY/RGB
+ * columns (A/B) are dropped entirely — obsolete grayscale-heightmap-authoring data, fully
+ * superseded by IH WB's own generation canon — and replaced by biomeColor below, sourced from a
+ * genuinely different place in the same chart (the Biome Name column's own cell fill).
  *
  * CSV / DataTable (DT_ASLSlopeBiome):
  *   Header: ---,biomeID,sortOrder,... (UE row-name column + struct fields; row name = biomeID value)
@@ -48,10 +49,14 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	int32 sortOrder = 0;
 
-	/** Source/reference heightmap grayscale key (0-255). Reference/visualization metadata, not the
-	 * primary runtime classifier — ASL/Slope/Zone drive lookup, not grayValue. */
+	/** Artist-authored display color for this biome band, from the source chart's own Biome Name
+	 * cell fill (Topygraphy Elevation Chart.xlsx, Column I) — not derived or procedural. 6-hex-digit
+	 * RRGGBB, no leading '#' (e.g. "009900" for High Timberland). sRGB as authored in Excel; convert
+	 * via FColor::FromHex() then ReinterpretAsLinear() before feeding a MID's linear color param —
+	 * do not treat the raw hex bytes as already-linear. Reference/visualization metadata, not the
+	 * primary runtime classifier — ASL/Slope/Zone drive lookup, not biomeColor. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
-	uint8 grayValue = 0;
+	FString biomeColor;
 
 	/** Mountainous / Highlands / Midlands / Lowlands / Upland Coastal / Wet Coastal / Shallow /
 	 * Verdant / Harborage / Deep / Abysmal. Plain FName for now (matches this project's own
