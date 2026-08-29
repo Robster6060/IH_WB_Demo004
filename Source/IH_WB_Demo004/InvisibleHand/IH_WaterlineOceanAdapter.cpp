@@ -466,6 +466,29 @@ void AIH_WaterlineOceanAdapter::SetOceanVisible(bool bVisible)
 	}
 }
 
+void AIH_WaterlineOceanAdapter::DestroyAllShoreManagers()
+{
+	UWorld* World = GetWorld();
+	int32 DestroyedCount = 0;
+	for (const TObjectPtr<AActor>& Shore : ShoreManagerInstances)
+	{
+		if (IsValid(Shore))
+		{
+			if (World)
+			{
+				World->DestroyActor(Shore);
+			}
+			++DestroyedCount;
+		}
+	}
+
+	UE_LOG(LogIH_WB_Demo004, Log, TEXT("Waterline adapter: destroyed %d Shore Manager(s) ahead of realm regen."), DestroyedCount);
+
+	ShoreManagerInstances.Reset();
+	ShoreManagerIslands.Reset();
+	ShoreManagerWasVisible.Reset();
+}
+
 void AIH_WaterlineOceanAdapter::SpawnShoreManagersForIslands(const TArray<TObjectPtr<AIH_WB_IslandActor>>& Islands)
 {
 	UWorld* World = GetWorld();

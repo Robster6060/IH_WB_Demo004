@@ -63,6 +63,13 @@ public:
 	 * failed to initialize. */
 	void SpawnShoreManagersForIslands(const TArray<TObjectPtr<AIH_WB_IslandActor>>& Islands);
 
+	/** Destroys every Shore Manager spawned by SpawnShoreManagersForIslands() and empties the
+	 * tracking arrays. Must be called before a realm regenerates (new seed/island count) —
+	 * SpawnShoreManagersForIslands() has no way to know a previous batch exists and will simply
+	 * append to it, leaving the old seed's Shore Managers (and their duplicated per-instance
+	 * render targets) running forever alongside the new ones. */
+	void DestroyAllShoreManagers();
+
 private:
 	UPROPERTY(Transient)
 	TObjectPtr<AActor> WaterlineOceanInstance = nullptr;

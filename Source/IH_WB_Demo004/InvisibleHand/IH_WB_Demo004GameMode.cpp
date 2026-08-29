@@ -1190,6 +1190,11 @@ void AIH_WB_Demo004GameMode::RegenerateIslandsFromSeed()
 
 	DestroyAllIslandBaseDevProps();
 
+	if (WaterlineOceanAdapter)
+	{
+		WaterlineOceanAdapter->DestroyAllShoreManagers();
+	}
+
 	for (AIH_WB_IslandActor* Island : SpawnedIslands)
 	{
 		if (IsValid(Island))
