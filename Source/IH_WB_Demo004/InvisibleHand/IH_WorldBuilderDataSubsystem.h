@@ -27,6 +27,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Invisible Hand|World Builder|Data")
 	UDataTable* GetASLSlopeBiomeTable() const { return ASLSlopeBiomeTable; }
 
+	/** DT_BiomeTagZoneExemption (IH-DEC-053) — Mechanism A of the Latitude x PGC design: content
+	 * tags that must be fully absent in one or more latitude zones. Row struct
+	 * FIHBiomeTagZoneExemptionRow. Not yet consumed by any runtime code — authored ahead of Phase
+	 * 3 (Latitude selector), same as DT_ASLSlopeBiome's own zone bools were before this session. */
+	UFUNCTION(BlueprintPure, Category = "Invisible Hand|World Builder|Data")
+	UDataTable* GetBiomeTagZoneExemptionTable() const { return BiomeTagZoneExemptionTable; }
+
 private:
 	UDataTable* LoadOrCreateDataTable(
 		const TCHAR* AssetObjectPath,
@@ -36,4 +43,7 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UDataTable> ASLSlopeBiomeTable;
+
+	UPROPERTY()
+	TObjectPtr<UDataTable> BiomeTagZoneExemptionTable;
 };

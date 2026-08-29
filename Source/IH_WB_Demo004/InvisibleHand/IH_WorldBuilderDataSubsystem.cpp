@@ -3,6 +3,7 @@
 #include "IH_WorldBuilderDataSubsystem.h"
 
 #include "IH_ASLSlopeBiomeRow.h"
+#include "IH_BiomeTagZoneExemptionRow.h"
 
 #include "Engine/DataTable.h"
 #include "Misc/FileHelper.h"
@@ -14,6 +15,10 @@ namespace IH_WorldBuilderDataPaths
 		TEXT("/Game/InvisibleHand/Data/DataTables/DT_ASLSlopeBiome.DT_ASLSlopeBiome");
 	static constexpr TCHAR ASLSlopeBiomeCsv[] =
 		TEXT("InvisibleHand/Data/DataTables/DT_ASLSlopeBiome.csv");
+	static constexpr TCHAR BiomeTagZoneExemptionAsset[] =
+		TEXT("/Game/InvisibleHand/Data/DataTables/DT_BiomeTagZoneExemption.DT_BiomeTagZoneExemption");
+	static constexpr TCHAR BiomeTagZoneExemptionCsv[] =
+		TEXT("InvisibleHand/Data/DataTables/DT_BiomeTagZoneExemption.csv");
 }
 
 void UIH_WorldBuilderDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -25,6 +30,12 @@ void UIH_WorldBuilderDataSubsystem::Initialize(FSubsystemCollectionBase& Collect
 		IH_WorldBuilderDataPaths::ASLSlopeBiomeCsv,
 		FIHASLSlopeBiomeRow::StaticStruct(),
 		TEXT("DT_ASLSlopeBiome"));
+
+	BiomeTagZoneExemptionTable = LoadOrCreateDataTable(
+		IH_WorldBuilderDataPaths::BiomeTagZoneExemptionAsset,
+		IH_WorldBuilderDataPaths::BiomeTagZoneExemptionCsv,
+		FIHBiomeTagZoneExemptionRow::StaticStruct(),
+		TEXT("DT_BiomeTagZoneExemption"));
 }
 
 UDataTable* UIH_WorldBuilderDataSubsystem::LoadOrCreateDataTable(

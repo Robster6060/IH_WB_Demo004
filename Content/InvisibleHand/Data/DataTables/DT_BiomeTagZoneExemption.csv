@@ -1,0 +1,11 @@
+---,tag,bExemptNordic,bExemptTemperate,bExemptTropical,notes
+Coral,Coral,true,false,false,"Requires warm water; excluded from Nordic regardless of which zone-agnostic coastal row (Beach, Reef, etc.) it is attached to. Matches the Reef biome rows own zone pattern (Temperate+Tropical only)."
+Ice,Ice,false,false,true,Permanent ice (Glacier/Glacier Runoff/Ice Floes) is Nordic+Temperate only; excluded from Tropical. Left eligible in Temperate since temperate rivers/lakes do freeze seasonally.
+As,As,false,false,true,"Arsenic ore only appears on Apex Caps/Glacier/Glacier Runoff/Snow Caps in the source chart, all Nordic+Temperate-restricted rows; excluded from Tropical."
+Hg,Hg,false,false,true,"Mercury ore, same cold-only pattern as As."
+Ni,Ni,false,false,true,"Nickel ore, same cold-only pattern as As."
+Obsidian,Obsidian,false,false,true,"Volcanic glass, only ever listed on cold-summit rows in the source chart; excluded from Tropical."
+S,S,false,false,true,"Sulfur ore, same cold-only pattern as As."
+Sb,Sb,false,false,true,"Antimony ore, same cold-only pattern as As."
+Disease,Disease,true,false,false,"Hazard only ever listed on Marsh/Swamp, both Temperate+Tropical-restricted rows; excluded from Nordic."
+Drought,Drought,true,false,false,"Hazard only ever listed on High Desert/Low Desert, both Temperate+Tropical-restricted rows; excluded from Nordic."
