@@ -1623,26 +1623,35 @@ void UIHSeedIslandLibrary::ComputeSummitTopZCmForAreas(
 		return;
 	}
 
-	static constexpr float SummitMinMeters = 30.f;
-	static constexpr float SummitMaxMeters = 180.f;
-	static constexpr float SummitAreaAlpha = 0.5f;
-
-	float MinArea = AreasKm2[0];
-	float MaxArea = AreasKm2[0];
-	for (const float Area : AreasKm2)
-	{
-		MinArea = FMath::Min(MinArea, Area);
-		MaxArea = FMath::Max(MaxArea, Area);
-	}
+	// IH-DEC-052: replaced the old realm-relative-rank formula (30m smallest -> 180m largest,
+	// scaled by AreaT = this island's area rank *within the current realm only*) with one keyed
+	// to each island's own absolute footprint diameter — the old formula meant the biggest island
+	// in a tiny 3-island dev realm and the biggest island in a future 512,000-acre realm both got
+	// pushed toward the same 180m ceiling, which is exactly backwards for a DT meant to eventually
+	// fit much larger islands. This computation is now fully independent per island — no
+	// realm-wide min/max pass needed.
+	//
+	// ApexMeters = DiameterMeters / phi^HeightExponent, capped at the canonical 2400m ceiling
+	// (MountainApexMeters, IHInvisibleHandDesignSpec.h — validated in
+	// Topography_Elevation_Chart_Comprehensive_Recommendations.md, never previously wired to any
+	// live formula). HeightExponent=6.367 is calibrated so the 512,000-acre "River Prototype" gate
+	// (IH-DEC-026, ~2072 km^2, ~51.4km diameter) lands almost exactly at 2400m — real large
+	// volcanic ocean islands (La Palma ~47km diameter -> 2426m; Maui ~77km -> 3055m) sit in a
+	// comparable apex-to-diameter band, so this is a plausible real-world ratio, not an arbitrary
+	// number fit to one target alone. At this project's current ~10-20km dev-scale island
+	// diameters this lands in the ~370-950m range (vs. the old formula's fixed 30-180m band) —
+	// directly addressing the "islands look flat/uniformly tan" observation.
+	static constexpr double HeightExponent = 6.367;
+	const double SummitDiameterDivisor = FMath::Pow(IHInvisibleHandSpec::GoldenRatioPhi, HeightExponent);
 
 	OutSummitTopZCm.Reserve(AreasKm2.Num());
-	for (const float Area : AreasKm2)
+	for (const float AreaKm2 : AreasKm2)
 	{
-		const float AreaT = (MaxArea > MinArea + KINDA_SMALL_NUMBER)
-			? FMath::Clamp((Area - MinArea) / (MaxArea - MinArea), 0.f, 1.f)
-			: 1.f;
-		const float SummitMeters = SummitMinMeters + (SummitMaxMeters - SummitMinMeters) * FMath::Pow(AreaT, SummitAreaAlpha);
-		OutSummitTopZCm.Add(SummitMeters * 100.f);
+		const double DiameterMeters = 2.0 * FMath::Sqrt(FMath::Max(0.0, static_cast<double>(AreaKm2)) / PI) * 1000.0;
+		const double ApexMeters = FMath::Min(
+			DiameterMeters / SummitDiameterDivisor,
+			static_cast<double>(IHInvisibleHandSpec::MountainApexMeters));
+		OutSummitTopZCm.Add(static_cast<float>(ApexMeters * 100.0));
 	}
 }
 

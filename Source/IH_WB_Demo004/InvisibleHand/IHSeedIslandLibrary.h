@@ -212,7 +212,13 @@ public:
 
 
 
-	/** Per-island summit Z (cm ASL) from area ratio: 30 m (smallest) → 180 m (largest), α≈0.5 power law. */
+	/** Per-island summit Z (cm ASL) from each island's own absolute footprint diameter (IH-DEC-052)
+	 * — NOT realm-relative area rank (the pre-2026-08-28 formula: 30m smallest -> 180m largest,
+	 * scaled by rank within the current realm only, meant the biggest island in a tiny 3-island dev
+	 * realm and the biggest island in a future 512,000-acre realm both got pushed toward the same
+	 * ceiling). ApexMeters = Diameter / phi^HeightExponent, capped at the canonical 2400m ceiling
+	 * (MountainApexMeters) — calibrated so the 512,000-acre "River Prototype" gate (IH-DEC-026)
+	 * lands at the ceiling. */
 
 	UFUNCTION(BlueprintPure, Category = "Invisible Hand|Terrain")
 
