@@ -1,5 +1,5 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// Invisible Hand — Data Table row for DT_ASLSlopeBiome.csv (IH-DEC-052)
+// Invisible Hand — Data Table row for DT_ASLSlopeBiome.csv (IH-DEC-052, trimmed per IH-DEC-054)
 
 #pragma once
 
@@ -16,11 +16,21 @@
  * 324 rows, one explicit row per Latitude x ASL x Slope, RuleOrder/ReviewStatus/typed-struct
  * rigor) — see IH-DEC-052: too few real differences between latitude zones to justify that
  * complexity. Latitude eligibility is 3 independent bools, not mutually exclusive — a biome band
- * can be valid in more than one zone (e.g. Volcanic Rim is Nordic+Temperate+Tropical; Glacier is
- * Nordic+Temperate only). Canonical zone boundaries (IH-DEC-051): Nordic >=70 deg N,
+ * can be valid in more than one zone (e.g. Marsh is Nordic+Temperate+Tropical; Reef is Tropical
+ * only; Tundra is Nordic only). Canonical zone boundaries (IH-DEC-051): Nordic >=70 deg N,
  * Temperate 30-70 deg N, Tropical 0-30 deg N — those boundary values have no runtime consequence
  * here, since RealmLatitudeZone is resolved to one of the 3 zones once, at World Builder time,
  * before this table is ever queried.
+ *
+ * Trimmed from the original 45 rows to 20 (IH-DEC-054) — every row this table used to carry for
+ * Hydrology (River/Streams/Springhead/Riverine/Glacier/Glacier Runoff/Swamp), Terrain Stamps
+ * (Plateau/Harborage/Volcanic Rim/Coastal Cliffs/Canyon), WWF/SeaRoots underwater geometry
+ * (Shallow/Verdant/Deep/Abysmal Sea), and Ore deposits (Low/Mid/High Ore Escarpment, superseded
+ * by a separate Perlin-noise mineral layer, not yet built) is deleted — those systems generate
+ * their own content directly and a static ASL+slope lookup here only competed with them for
+ * territory (root cause of an observed all-blue-biome-band bug: Hydro rows' broad slope range won
+ * across huge contiguous areas with no actual watercourse check). The `SEA LEVEL` marker row and
+ * `bPcgEligible` are gone too — every surviving row is a real, always-PCG-eligible biome.
  *
  * Features and Resources are merged into a single `features` array (IH-DEC-052 resolution of
  * ASLSlopeBiome002.md's Open Item A — the source data split landform content inconsistently
@@ -59,11 +69,10 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FString biomeColor;
 
-	/** Mountainous / Highlands / Midlands / Lowlands / Upland Coastal / Wet Coastal / Shallow /
-	 * Verdant / Harborage / Deep / Abysmal. Plain FName for now (matches this project's own
-	 * precedent of starting categorization fields as FName before formalizing into a UENUM once
-	 * cross-system usage proves stable — see FIHBuildPaletteItemRow::structureCategory). Keys the
-	 * mineral-eligibility lookup. */
+	/** Mountainous / Highlands / Midlands / Lowlands / Upland Coastal / Wet Coastal. Plain FName
+	 * for now (matches this project's own precedent of starting categorization fields as FName
+	 * before formalizing into a UENUM once cross-system usage proves stable — see
+	 * FIHBuildPaletteItemRow::structureCategory). Keys the mineral-eligibility lookup. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FName terrainTier;
 
@@ -83,10 +92,11 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	float maxSlopeDeg = 0.f;
 
-	/** True only for Abysmal (flat sea floor, no meaningful slope band) — an explicit flag rather
-	 * than a numeric sentinel (the source chart's old "156"/"nan" slope-field sentinels were a real,
-	 * already-fixed defect in the earlier drafts; this field exists specifically so that mistake
-	 * can't recur here). */
+	/** False on every current row (the one row it applied to, Abysmal, was removed per IH-DEC-054)
+	 * — kept as an explicit flag rather than deleted, since a future row with no meaningful slope
+	 * band is plausible and a numeric sentinel would be the wrong way to express that (the source
+	 * chart's old "156"/"nan" slope-field sentinels were a real, already-fixed defect in earlier
+	 * drafts; this field exists specifically so that mistake can't recur). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	bool bSlopeAgnostic = false;
 
@@ -146,9 +156,4 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	/** Eligible environmental/gameplay hazards. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	TArray<FName> hazards;
-
-	/** False only on the SEA LEVEL marker row (a zero-thickness datum divider, not a real biome
-	 * band) — PCG lookup must filter on this. */
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
-	bool bPcgEligible = true;
 };

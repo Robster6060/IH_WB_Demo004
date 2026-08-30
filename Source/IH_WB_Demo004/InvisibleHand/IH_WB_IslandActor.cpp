@@ -1748,9 +1748,9 @@ namespace IH_WB_IslandActorPrivate
 
 	/** Resolves the live DT_ASLSlopeBiome rows once per island build (not per-triangle) — Outer
 	 * must be a UObject whose GetWorld() reaches a live UGameInstance (true for
-	 * AIH_WB_IslandActor). Excludes the SEA LEVEL marker row (bPcgEligible=false, zero-thickness
-	 * divider, not a real band) and sorts by sortOrder so match order is explicit rather than
-	 * relying on DataTable/CSV row order alone. */
+	 * AIH_WB_IslandActor). Every row is a real biome band post-IH-DEC-054 (the SEA LEVEL marker
+	 * row is gone, along with bPcgEligible) — sorts by sortOrder so match order is explicit rather
+	 * than relying on DataTable/CSV row order alone. */
 	static TArray<const FIHASLSlopeBiomeRow*> GetBiomeRowsSortedForClassification(UObject* Outer)
 	{
 		TArray<const FIHASLSlopeBiomeRow*> Rows;
@@ -1768,7 +1768,7 @@ namespace IH_WB_IslandActorPrivate
 		Rows.Reserve(RawRows.Num());
 		for (const FIHASLSlopeBiomeRow* R : RawRows)
 		{
-			if (R && R->bPcgEligible)
+			if (R)
 			{
 				Rows.Add(R);
 			}
