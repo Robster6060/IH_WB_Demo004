@@ -3065,7 +3065,19 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		return BestIdx;
 	};
 
-	constexpr int32 NumPrimaryTroughs = 2;
+	// IH-DEC-055 acreage raise (128k->512k) exposed a real gap: trough COUNT never scaled with
+	// island size (only cell density did, via fixed TargetCellWidthCm), so real production islands
+	// at the new larger scale got the exact same fixed count as the old ~10-20km islands this was
+	// tuned against - spread across a much bigger landmass, that reads as a few long radiating
+	// trenches ("starfish") instead of organic compound nesting. Reuses the same HopRadius/
+	// ReferenceHopRadius signal as MainBlobPower/AccentBlobPower above (proven pattern in this same
+	// function) rather than a new size metric. Deliberately sqrt-scaled with a low cap, not linear:
+	// a documented severing incident (3 troughs cut a thin landmass into 2-3 disconnected pieces,
+	// see the AddRangeBetweenCells comment below) is why this was 2, not 3, in the first place -
+	// conservative here on purpose, meant to be pushed further only after real-seed PIE self-testing
+	// confirms no new severing at the new scale.
+	const double TroughScale = FMath::Sqrt(HopRadius / ReferenceHopRadius);
+	const int32 NumPrimaryTroughs = FMath::Clamp(FMath::RoundToInt(2.0 * TroughScale), 2, 4);
 	TArray<TArray<FVector2D>> PrimaryTroughPaths;
 	for (int32 i = 0; i < NumPrimaryTroughs; ++i)
 	{
@@ -3092,8 +3104,9 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// same coastal window, an independent statistical layer per Azgaar's own layering mechanism
 	// (heightmap-templates.ts), not an explicit hierarchy - was missing entirely. Porting the
 	// test's own proven window/LinePower/height values directly rather than re-deriving them.
+	const int32 NumSubInlets = FMath::Clamp(FMath::RoundToInt(2.0 * TroughScale), 2, 4);
 	FIHTerrainCellDiffusion::AddRange(
-		Graph, /*Count=*/2, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
+		Graph, NumSubInlets, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
 		FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), /*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream);
 
 	// Cove-scale daughter troughs biased toward a primary trough's path - the compound
