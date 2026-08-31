@@ -3156,6 +3156,17 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// ONE seed, not just noisy edges. Pushing further on the one lever already proven to reduce
 	// fragmentation (Smooth cut loop count ~50% in the first attempt) rather than touching the
 	// core diffusion algorithm itself.
+	// IH-DEC-059 investigation (2026-08-31): reducing this to 4x0.30 was tried and self-tested -
+	// REVERTED. Real headless data showed landFraction got WORSE, not better (one island
+	// 0.154->0.086), because less smoothing let MORE of the underlying per-hop jitter fragmentation
+	// (Bug 3) through as separate disconnected components, which the islet-budget filter (~line
+	// 3389, calibrated against today's fragmentation pattern) then discards more of, not less. The
+	// erosion mechanism itself (this pass also flattens the summit cell, ~1.1% retention at 8x0.45)
+	// is real, but a blanket pass-count/factor reduction is the wrong lever - it fights
+	// fragmentation control and erosion with the same knob. Needs a land-aware/masked-average
+	// redesign (suppress Ocean-neighbor pull specifically, without weakening the Land-side
+	// diffusion-jitter averaging fragmentation control depends on) before retrying - not a constant
+	// tune. Back to the original, proven values pending that redesign.
 	for (int32 SmoothPass = 0; SmoothPass < 8; ++SmoothPass)
 	{
 		FIHTerrainCellDiffusion::Smooth(Graph, 0.45);
