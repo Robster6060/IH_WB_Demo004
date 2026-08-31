@@ -2808,22 +2808,6 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	const double MainBlobPower = FMath::Clamp(FMath::Pow(0.90, ReferenceHopRadius / HopRadius), 0.80, 0.997);
 	const double AccentBlobPower = FMath::Clamp(FMath::Pow(0.88, ReferenceHopRadius / HopRadius), 0.80, 0.996);
 
-	// IH-DEC-057: a single hill's REACH scales with HopRadius above (MainBlobPower), but its
-	// COUNT per profile was still fixed (2 for High, 1 for Volc, 2-3 for Low) regardless of island
-	// size. DiffuseFromSeeds' power-law falloff is a single-peak curve - half-height within ~8% of
-	// a hill's own hop-reach, under 6% of peak by the reach midpoint - so a couple of fixed point
-	// seeds leave most of a (now much larger, post-IH-DEC-055) island's interior sitting in the
-	// flat low tail, which normalizes to Shorelands regardless of SummitTopZCm. Fix: scale filler-
-	// hill COUNT with the same HopRadius/ReferenceHopRadius signal, conservative sqrt (matching the
-	// TroughScale precedent below). At today's proven reference scale this is ~1.0, so filler counts
-	// clamp to their floor and existing profiles are visually unchanged - only larger islands get
-	// more fill. Kept deliberately modest (Low: 2-8, High/Volc: +0-6) given the Addendum-1-era
-	// history a few lines above of MANY overlapping hills (10-26) crossing a percolation threshold
-	// and making landFraction wildly unstable (0.051-0.977) - self-test landFraction (UE_LOG below,
-	// "landFraction=") across seeds before trusting this, same discipline as that history and as the
-	// trough-count fix.
-	const double HillFillScale = FMath::Sqrt(HopRadius / ReferenceHopRadius);
-
 	// Plan Addendum 5: golden-ratio scalene seed triangle, replacing the point-seeded circular
 	// base shape. Side LENGTHS in ratio 1:phi:phi^2 are degenerate (1 + phi == phi^2 exactly, the
 	// defining golden-ratio identity - a "triangle" with those side lengths has zero area). Using
@@ -2956,20 +2940,6 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 				Graph, ApexA, ApexB, /*HeightMin=*/35.0, /*HeightMax=*/55.0,
 				/*LinePower=*/0.85, /*PathRandomness=*/0.45, Stream);
 		}
-		// IH-DEC-057: interior filler hills, scaled with island size (HillFillScale, see above) -
-		// 0 at reference scale (today's proven twin-ridge look untouched), more on larger islands so
-		// the area between/around the two named apexes isn't left in their diffusion tails' flat
-		// low shoulder. Height kept below both apexes (30-55) so it reads as fill, not a third
-		// summit.
-		{
-			const int32 NumHighFillers = FMath::Clamp(FMath::RoundToInt(2.0 * HillFillScale), 0, 6);
-			for (int32 FillerIdx = 0; FillerIdx < NumHighFillers && TriangleCellIndices.Num() > 0; ++FillerIdx)
-			{
-				const int32 SeedCellIdx = TriangleCellIndices[Stream.RandRange(0, TriangleCellIndices.Num() - 1)];
-				FIHTerrainCellDiffusion::AddHillFromCellSet(
-					Graph, { SeedCellIdx }, /*HeightMin=*/30.0, /*HeightMax=*/50.0, MainBlobPower, Stream);
-			}
-		}
 		break;
 	}
 	case EIHIslandProfile::Volc:
@@ -2985,20 +2955,6 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 			FIHTerrainCellDiffusion::AddHillFromCellSet(
 				Graph, { ConeSeed }, /*HeightMin=*/-18.0, /*HeightMax=*/-10.0,
 				FMath::Clamp(AccentBlobPower - 0.05, 0.75, 0.95), Stream);
-		}
-		// IH-DEC-057: interior filler hills, scaled with island size (HillFillScale, see above) -
-		// 0 at reference scale (today's proven single-cone look untouched), more on larger islands.
-		// Height kept clearly below the cone (20-35 vs. 70-85) so fillers read as raised foothills/
-		// skirt around the one dominant peak, not competing volcanoes (preserves the "single
-		// volcanic cone" canon).
-		{
-			const int32 NumVolcFillers = FMath::Clamp(FMath::RoundToInt(2.0 * HillFillScale), 0, 6);
-			for (int32 FillerIdx = 0; FillerIdx < NumVolcFillers && TriangleCellIndices.Num() > 0; ++FillerIdx)
-			{
-				const int32 SeedCellIdx = TriangleCellIndices[Stream.RandRange(0, TriangleCellIndices.Num() - 1)];
-				FIHTerrainCellDiffusion::AddHillFromCellSet(
-					Graph, { SeedCellIdx }, /*HeightMin=*/20.0, /*HeightMax=*/35.0, MainBlobPower, Stream);
-			}
 		}
 		break;
 	}
@@ -3020,11 +2976,7 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 			FIHTerrainCellDiffusion::AddHillFromCellSet(
 				Graph, { PrimaryIdx }, /*HeightMin=*/50.0, /*HeightMax=*/70.0, MainBlobPower, Stream);
 
-			// IH-DEC-057: scale accent count with island size (HillFillScale, see above) - clamps
-			// to the original 2-3 at reference scale, up to 8 for larger islands so interior fill
-			// keeps pace with the now much bigger triangle footprint.
-			const int32 NumLowAccents = FMath::Clamp(
-				FMath::RoundToInt(static_cast<double>(Stream.RandRange(2, 3)) * HillFillScale), 2, 8);
+			const int32 NumLowAccents = Stream.RandRange(2, 3);
 			for (int32 AccentSeedIdx = 0; AccentSeedIdx < NumLowAccents; ++AccentSeedIdx)
 			{
 				const int32 AccentIdx = TriangleCellIndices[Stream.RandRange(0, TriangleCellIndices.Num() - 1)];
@@ -4032,10 +3984,6 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		return Fallback;
 	};
 
-	// TEMPORARY (IH-DEC-057 self-test only, remove once the interior-fill fix is confirmed):
-	// bucket the actual NormalizedHeight distribution so the fix can be judged directly against
-	// the raw height field, independent of DT_ASLSlopeBiome row-matching (a separate mechanism).
-	int32 HeightBucketCounts[5] = { 0, 0, 0, 0, 0 }; // <10%, 10-30%, 30-60%, 60-90%, >=90%
 	for (const FIHTerrainCell& Cell : Graph.Cells)
 	{
 		if (Cell.Feature != EIHCellFeature::Land || Cell.Boundary.Num() < 3)
@@ -4049,11 +3997,6 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 			const double SmoothedRaw = SmoothedHeightAt(P, Cell.Height);
 			const double NormalizedHeight = FMath::Clamp((SmoothedRaw - LandThreshold) / HeightSpan, 0.0, 1.0);
 			const float ZCm = FMath::Max(1.f, static_cast<float>(NormalizedHeight) * SummitTopZCm);
-			if (NormalizedHeight < 0.10) ++HeightBucketCounts[0];
-			else if (NormalizedHeight < 0.30) ++HeightBucketCounts[1];
-			else if (NormalizedHeight < 0.60) ++HeightBucketCounts[2];
-			else if (NormalizedHeight < 0.90) ++HeightBucketCounts[3];
-			else ++HeightBucketCounts[4];
 			Vertices.Add(FVector(P.X, P.Y, ZCm));
 			Normals.Add(FVector(0.0, 0.0, 1.0)); // placeholder - recomputed below from the smoothed surface
 			UV0.Add(FVector2D(P.X / 100.0, P.Y / 100.0));
@@ -4208,14 +4151,6 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		PrimaryTroughPaths.Num(), DaughterTroughCount, CoastLoops.Num(),
 		ClassifiedBiomeTris, DistinctBiomeCount,
 		ShelfTriCount, FPlatformTime::Seconds() - StartSeconds);
-
-	// TEMPORARY (IH-DEC-057 self-test only, remove once the interior-fill fix is confirmed and the
-	// diagnostic rainbow colors are reverted): raw NormalizedHeight distribution across this
-	// island's land vertices, independent of DT_ASLSlopeBiome row-matching.
-	UE_LOG(LogTemp, Log,
-		TEXT("IH-DEC-057 heightBuckets: island=%d under10pct=%d p10to30=%d p30to60=%d p60to90=%d over90pct=%d"),
-		TankIslandIndex, HeightBucketCounts[0], HeightBucketCounts[1], HeightBucketCounts[2],
-		HeightBucketCounts[3], HeightBucketCounts[4]);
 
 	if (UGameInstance* GI = GetGameInstance())
 	{
