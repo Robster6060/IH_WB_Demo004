@@ -19,15 +19,20 @@ namespace
 
 	static constexpr float StickFootprintHalfCm = 2500.f;
 
+	// IH-DEC-056 (48-row landform grid) tier boundaries, matching the current diagnostic rainbow
+	// pass on DT_ASLSlopeBiome (biomeColor temporarily set per-tier to these exact hex values) -
+	// bands 1-7 are the real WWF..Alpine tiers; band 0 (-250 to -25m) is below the DT's own floor
+	// (ShelfFloorMeters=-25m, nothing classifies that deep today) and keeps its prior color as an
+	// unclassified "abyss" marker, not part of the 7-tier match.
 	static const FAltitudeBandSpec AltitudeBands[AltitudeBandCount] = {
-		{-250.f, -25.f, FColor(0x3F, 0x00, 0xFF)},
-		{-25.f, 0.f, FColor(0xFD, 0xD9, 0xB5)},
-		{0.f, 100.f, FColor(0x7F, 0xFF, 0x00)},
-		{100.f, 500.f, FColor(0x56, 0x82, 0x03)},
-		{500.f, 1000.f, FColor(0x4B, 0x53, 0x20)},
-		{1000.f, 1500.f, FColor(0x6A, 0x0D, 0xAD)},
-		{1500.f, 2000.f, FColor(0x6B, 0x9E, 0x78)},
-		{2000.f, 2400.f, FColor(0x99, 0xFF, 0xFF)},
+		{-250.f, -25.f, FColor(0x3F, 0x00, 0xFF)},   // Abyss (unclassified, below WWF floor)
+		{-25.f, 0.f, FColor(0xFF, 0x00, 0x00)},      // WWF
+		{0.f, 200.f, FColor(0xFF, 0x88, 0x00)},      // Shorelands
+		{200.f, 600.f, FColor(0xFF, 0xFF, 0x00)},    // Lowlands
+		{600.f, 1100.f, FColor(0x00, 0xFF, 0x00)},   // Midlands
+		{1100.f, 1600.f, FColor(0x00, 0xFF, 0xFF)},  // Highlands
+		{1600.f, 2000.f, FColor(0x00, 0x00, 0xFF)},  // Montane
+		{2000.f, 2400.f, FColor(0x88, 0x00, 0xFF)},  // Alpine
 	};
 
 	static UMaterialInstanceDynamic* CreateBandMaterial(AActor* Outer, const FColor& Color)
