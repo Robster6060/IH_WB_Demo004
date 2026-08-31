@@ -1633,15 +1633,22 @@ void UIHSeedIslandLibrary::ComputeSummitTopZCmForAreas(
 	//
 	// ApexMeters = DiameterMeters / phi^HeightExponent, capped at the canonical 2400m ceiling
 	// (MountainApexMeters, IHInvisibleHandDesignSpec.h — validated in
-	// Topography_Elevation_Chart_Comprehensive_Recommendations.md, never previously wired to any
-	// live formula). HeightExponent=6.367 is calibrated so the 512,000-acre "River Prototype" gate
-	// (IH-DEC-026, ~2072 km^2, ~51.4km diameter) lands almost exactly at 2400m — real large
-	// volcanic ocean islands (La Palma ~47km diameter -> 2426m; Maui ~77km -> 3055m) sit in a
-	// comparable apex-to-diameter band, so this is a plausible real-world ratio, not an arbitrary
-	// number fit to one target alone. At this project's current ~10-20km dev-scale island
-	// diameters this lands in the ~370-950m range (vs. the old formula's fixed 30-180m band) —
-	// directly addressing the "islands look flat/uniformly tan" observation.
-	static constexpr double HeightExponent = 6.367;
+	// Topography_Elevation_Chart_Comprehensive_Recommendations.md).
+	//
+	// IH-DEC-055 recalibration: the original HeightExponent=6.367 was calibrated against the
+	// WHOLE REALM's total land area at the 512,000-acre gate as if that were a single island's
+	// footprint (~2072 km^2, ~51.4km diameter) — but AreasKm2 here is each island's own share
+	// AFTER the Fibonacci per-island split (see ComputeIslandAreasKM2/GetFibonacciAreaWeights),
+	// so no real island ever reaches that diameter; even the best-case 2-island split only gets
+	// 61.8% of realm land. Recalibrated against the largest island in a representative 3-island
+	// realm (Fibonacci weight ~50.01%) at the 512,000-acre gate: total land ~2072 km^2, largest
+	// island ~1036 km^2, diameter ~36.3km. HeightExponent=5.646 makes that diameter land almost
+	// exactly on the 2400m cap. Sanity-checked elsewhere in the realistic range: today's
+	// 128,000-acre default's 3-island largest island already reaches ~1200m (was ~950m under the
+	// old exponent); 512,000 acres at the worst-case 7-island split (~39.6% share) still reaches
+	// ~2135m. Real large volcanic ocean islands (La Palma ~47km diameter -> 2426m; Maui ~77km ->
+	// 3055m) remain a plausible real-world comparable for the overall diameter-to-apex shape.
+	static constexpr double HeightExponent = 5.646;
 	const double SummitDiameterDivisor = FMath::Pow(IHInvisibleHandSpec::GoldenRatioPhi, HeightExponent);
 
 	OutSummitTopZCm.Reserve(AreasKm2.Num());

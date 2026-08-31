@@ -217,8 +217,10 @@ public:
 	 * scaled by rank within the current realm only, meant the biggest island in a tiny 3-island dev
 	 * realm and the biggest island in a future 512,000-acre realm both got pushed toward the same
 	 * ceiling). ApexMeters = Diameter / phi^HeightExponent, capped at the canonical 2400m ceiling
-	 * (MountainApexMeters) — calibrated so the 512,000-acre "River Prototype" gate (IH-DEC-026)
-	 * lands at the ceiling. */
+	 * (MountainApexMeters) — recalibrated (IH-DEC-055) against the largest island's own Fibonacci
+	 * area share in a representative 3-island realm at the 512,000-acre "River Prototype" gate
+	 * (IH-DEC-026), not the whole realm's total land as a single island, which the original
+	 * IH-DEC-052 calibration never reached in practice. */
 
 	UFUNCTION(BlueprintPure, Category = "Invisible Hand|Terrain")
 

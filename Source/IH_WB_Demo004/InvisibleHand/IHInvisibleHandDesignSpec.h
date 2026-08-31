@@ -16,13 +16,17 @@ namespace IHInvisibleHandSpec
 	static constexpr double GoldenRatioPhi = 1.6180339887498948482;
 
 	/**
-	 * Default realm half-extent N-S (16.3 km → 32.7 km depth; φ width → ~52.9 km E-W).
-	 * Sized so total realm land ≈ 128,000 acres at 30% land fraction (IH-DEC-026 "Firth
-	 * Review" gate, current active target for the cell-graph pivot) — was 13 km (~81k acres)
-	 * under the legacy heightfield pipeline; raised alongside the Demo003 fork.
+	 * Default realm half-extent N-S (32.67 km -> 65.3 km depth; phi width -> ~105.7 km E-W).
+	 * Sized so total realm land ~ 512,000 acres at 30% land fraction (IH-DEC-026 "River
+	 * Prototype" gate) — raised from the 128,000-acre "Firth Review" default (16.3 km, ~81k
+	 * acres before that under the legacy heightfield pipeline) per IH-DEC-055, alongside the
+	 * apex-height recalibration: islands were never reaching any real elevation variety at
+	 * 128,000 acres regardless of the height formula, blocking Phases 3-5. Raised consciously
+	 * accepting IH-DEC-050's three still-open blockers (Hydrology unstarted, Sector Fabric perf
+	 * finding open, WWF Ocean-ON visual confirmation never done) rather than waiting on them.
 	 * Production millions remain GATED (bWBUnlockProductionCanonicalAcres).
 	 */
-	static constexpr float DefaultRealmHalfExtentNSKm = 16.3f;
+	static constexpr float DefaultRealmHalfExtentNSKm = 32.67f;
 	/** @deprecated Prefer DefaultRealmHalfExtentNSKm (WT-B layout AABB rename). */
 	static constexpr float DefaultTankHalfDepthKm = DefaultRealmHalfExtentNSKm;
 
