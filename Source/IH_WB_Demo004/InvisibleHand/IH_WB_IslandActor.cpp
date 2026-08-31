@@ -3984,6 +3984,19 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		return Fallback;
 	};
 
+	// TEMPORARY (IH-DEC-058 self-test only, remove once the gamma value is confirmed in PIE): bucket
+	// both the pre-gamma (true baseline) and post-gamma NormalizedHeight distributions in one pass,
+	// so a single headless run gives both numbers for direct before/after comparison.
+	int32 LinearBucketCounts[5] = { 0, 0, 0, 0, 0 }; // <10%, 10-30%, 30-60%, 60-90%, >=90%
+	int32 GammaBucketCounts[5] = { 0, 0, 0, 0, 0 };
+	auto BucketInto = [](int32(&Counts)[5], double V)
+	{
+		if (V < 0.10) ++Counts[0];
+		else if (V < 0.30) ++Counts[1];
+		else if (V < 0.60) ++Counts[2];
+		else if (V < 0.90) ++Counts[3];
+		else ++Counts[4];
+	};
 	for (const FIHTerrainCell& Cell : Graph.Cells)
 	{
 		if (Cell.Feature != EIHCellFeature::Land || Cell.Boundary.Num() < 3)
@@ -3995,7 +4008,22 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		for (const FVector2D& P : Cell.Boundary)
 		{
 			const double SmoothedRaw = SmoothedHeightAt(P, Cell.Height);
-			const double NormalizedHeight = FMath::Clamp((SmoothedRaw - LandThreshold) / HeightSpan, 0.0, 1.0);
+			const double LinearNormalizedHeight = FMath::Clamp((SmoothedRaw - LandThreshold) / HeightSpan, 0.0, 1.0);
+			BucketInto(LinearBucketCounts, LinearNormalizedHeight);
+			// IH-DEC-058: DiffuseFromSeeds' power-law falloff is peaked (most land area sits near
+			// LandThreshold, a small summit reaches the top) - scale-invariant by construction, so
+			// this isn't a per-island-size bug like IH-DEC-055a/057. A uniform multiplicative boost
+			// of raw land height would be a no-op here: HeightSpan is itself derived from the same
+			// land cells' max, so scaling every land cell by the same factor cancels out exactly
+			// after normalization. Reshaping the already-computed 0-1 NormalizedHeight with a gamma
+			// curve instead (Gamma<1 lifts low/mid elevations, Gamma=1 = prior behavior) fixes the
+			// distribution's SHAPE directly, strictly after ClassifyLandWater has already locked in
+			// Land vs. Ocean per cell (~line 3213) - this can never move the coastline, change dry
+			// acreage, or add coastline loops (unlike the reverted IH-DEC-057 approach), and the
+			// single highest cell still hits SummitTopZCm exactly (Pow(1.0, Gamma) == 1.0).
+			constexpr double HeightReshapeGamma = 0.6;
+			const double NormalizedHeight = FMath::Pow(LinearNormalizedHeight, HeightReshapeGamma);
+			BucketInto(GammaBucketCounts, NormalizedHeight);
 			const float ZCm = FMath::Max(1.f, static_cast<float>(NormalizedHeight) * SummitTopZCm);
 			Vertices.Add(FVector(P.X, P.Y, ZCm));
 			Normals.Add(FVector(0.0, 0.0, 1.0)); // placeholder - recomputed below from the smoothed surface
@@ -4151,6 +4179,16 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		PrimaryTroughPaths.Num(), DaughterTroughCount, CoastLoops.Num(),
 		ClassifiedBiomeTris, DistinctBiomeCount,
 		ShelfTriCount, FPlatformTime::Seconds() - StartSeconds);
+
+	// TEMPORARY (IH-DEC-058 self-test only, remove once the gamma value is confirmed in PIE): raw
+	// vs. gamma-reshaped NormalizedHeight distribution across this island's land vertices, for a
+	// direct before/after comparison in one run.
+	UE_LOG(LogTemp, Log,
+		TEXT("IH-DEC-058 heightBuckets: island=%d linear[u10=%d p10to30=%d p30to60=%d p60to90=%d o90=%d] ")
+		TEXT("gamma[u10=%d p10to30=%d p30to60=%d p60to90=%d o90=%d]"),
+		TankIslandIndex,
+		LinearBucketCounts[0], LinearBucketCounts[1], LinearBucketCounts[2], LinearBucketCounts[3], LinearBucketCounts[4],
+		GammaBucketCounts[0], GammaBucketCounts[1], GammaBucketCounts[2], GammaBucketCounts[3], GammaBucketCounts[4]);
 
 	if (UGameInstance* GI = GetGameInstance())
 	{
