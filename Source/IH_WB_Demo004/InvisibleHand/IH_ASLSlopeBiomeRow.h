@@ -1,5 +1,6 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
-// Invisible Hand — Data Table row for DT_ASLSlopeBiome.csv (IH-DEC-052, trimmed per IH-DEC-054)
+// Invisible Hand — Data Table row for DT_ASLSlopeBiome.csv (IH-DEC-056: 48-row landform grid,
+// superseding IH-DEC-052's 45-row and IH-DEC-054's 20-row ecology-biome designs)
 
 #pragma once
 
@@ -8,36 +9,44 @@
 #include "IH_ASLSlopeBiomeRow.generated.h"
 
 /**
- * One elevation/slope biome band — the canonical PCG-derived biome classification lookup for a
- * sampled point on an IslandMesh, keyed on (ASL, Slope, LatitudeZone).
+ * One elevation/slope landform band — the canonical PCG-derived classification lookup for a
+ * sampled point on an IslandMesh, keyed on (ASL, Slope).
  *
- * Deliberately the simpler of two competing draft designs (ASLSlopeBiomeChart002.xlsx, ~45 rows,
- * per-zone Yes/No eligibility flags) rather than the heavier alternative (ASLSlopeBiome001.md,
- * 324 rows, one explicit row per Latitude x ASL x Slope, RuleOrder/ReviewStatus/typed-struct
- * rigor) — see IH-DEC-052: too few real differences between latitude zones to justify that
- * complexity. Latitude eligibility is 3 independent bools, not mutually exclusive — a biome band
- * can be valid in more than one zone (e.g. Marsh is Nordic+Temperate+Tropical; Reef is Tropical
- * only; Tundra is Nordic only). Canonical zone boundaries (IH-DEC-051): Nordic >=70 deg N,
- * Temperate 30-70 deg N, Tropical 0-30 deg N — those boundary values have no runtime consequence
- * here, since RealmLatitudeZone is resolved to one of the 3 zones once, at World Builder time,
- * before this table is ever queried.
+ * IH-DEC-056: full replacement of the prior 20-row ecology-named design (Marsh/Timberland/
+ * Tundra/Desert/etc.) with a symmetric 48-row landform-morphology grid, authored by the user in
+ * `ASLSlopeBiomeChart007.xlsx` — 7 elevation tiers (WWF -25-0m, Shorelands 1-200m, Lowlands
+ * 201-600m, Midlands 601-1100m, Highlands 1101-1600m, Montane 1601-2000m, Alpine 2001-2400m) x 7
+ * slope-types (Flat 0-5 deg, Rolling 6-10 deg, Rugged 11-25 deg, Steep 26-45 deg, Craggy 46-80
+ * deg, Sheer 81-90 deg, Basin [no degree range]), WWF has no Basin variant = 48 rows. Row names
+ * describe landform shape (Coastal Plain, Midland Hills, Highland Crags, Alpine Ridges), not
+ * ecology — ecology/resource content is layered on top via the mapping rules below, not baked
+ * into the name. Slope-type naming shifted from the prior 20-row scheme: what was called "Sloped"
+ * (11-25 deg) is now "Rugged," and what was called "Rugged" (46-80 deg) is now "Craggy" — same
+ * degree ranges, different names; don't assume "Rugged" means what it used to.
  *
- * Trimmed from the original 45 rows to 20 (IH-DEC-054) — every row this table used to carry for
- * Hydrology (River/Streams/Springhead/Riverine/Glacier/Glacier Runoff/Swamp), Terrain Stamps
- * (Plateau/Harborage/Volcanic Rim/Coastal Cliffs/Canyon), WWF/SeaRoots underwater geometry
- * (Shallow/Verdant/Deep/Abysmal Sea), and Ore deposits (Low/Mid/High Ore Escarpment, superseded
- * by a separate Perlin-noise mineral layer, not yet built) is deleted — those systems generate
- * their own content directly and a static ASL+slope lookup here only competed with them for
- * territory (root cause of an observed all-blue-biome-band bug: Hydro rows' broad slope range won
- * across huge contiguous areas with no actual watercourse check). The `SEA LEVEL` marker row and
- * `bPcgEligible` are gone too — every surviving row is a real, always-PCG-eligible biome.
+ * Basin is a real dual-origin terrain feature (heightmap-generated depressions AND
+ * Hydrology-Phase-spawned ones), not a placeholder — every Basin row carries both dry content
+ * (`quarryPitMinerals` — quarries and pits) and default wet content (Reeds/Papyrus/Rice/
+ * Shellfish/Fishing/Game), with a Nordic-zone override to Ice/Glacier content resolved entirely
+ * through `DT_BiomeTagZoneExemption` (the wet-content tags are Nordic-exempt there; Ice/Glacier
+ * are already Tropical-exempt) — no per-row branching needed. Basin rows use `bSlopeAgnostic=true`
+ * with `slopeRangeLabel="Basin"` rather than a real degree range.
  *
- * Features and Resources are merged into a single `features` array (IH-DEC-052 resolution of
- * ASLSlopeBiome002.md's Open Item A — the source data split landform content inconsistently
- * across the two columns with no clear rule for which went where). The source chart's GRAY/RGB
- * columns (A/B) are dropped entirely — obsolete grayscale-heightmap-authoring data, fully
- * superseded by IH WB's own generation canon — and replaced by biomeColor below, sourced from a
- * genuinely different place in the same chart (the Biome Name column's own cell fill).
+ * Content-mapping rules (user-authored, applied programmatically per slope-type/tier, not
+ * hand-copied per row): Quarry Pit minerals -> Basin only; Deep Mine -> Steep+Craggy; Derrick ->
+ * Flat+Rolling+Rugged; Cavern -> Craggy+Sheer; water flora/Fishing/Shellfish -> WWF Flat +
+ * Shorelands Basin; Grassland/Timber/Woodland/Orchards/Row Crops -> Shorelands..Montane,
+ * Flat..Rugged; Flowers/Herbs/Apiary/Game -> Shorelands..Alpine, Flat..Craggy; hazards ->
+ * Typhoon+Waterspout on WWF+Shorelands, Wildfire wherever Grassland/Timber/Woodland flora is
+ * present (Shorelands..Montane), Tornado on Flat..Rugged within Lowlands..Midlands.
+ *
+ * All 48 rows are zone-agnostic (`bZoneNordic`/`Temperate`/`Tropical` = true) — zone restriction
+ * happens entirely through `DT_BiomeTagZoneExemption` (IH-DEC-053 Mechanism A), keyed to
+ * individual content tags, not rows. Canonical zone boundaries (IH-DEC-051): Nordic >=70 deg N,
+ * Temperate 30-70 deg N, Tropical 0-30 deg N — no runtime consequence here; `RealmLatitudeZone`
+ * is resolved once at World Builder time, before this table or the registry is ever queried.
+ *
+ * `biomeColor` is the user's own hex per row from `ASLSlopeBiomeChart007.xlsx`, not derived.
  *
  * CSV / DataTable (DT_ASLSlopeBiome):
  *   Header: ---,biomeID,sortOrder,... (UE row-name column + struct fields; row name = biomeID value)
@@ -51,7 +60,7 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 {
 	GENERATED_BODY()
 
-	/** Stable synthetic key, e.g. "ASLB_001".."ASLB_045". Also the DataTable RowName. */
+	/** Stable synthetic key, e.g. "ASLB_001".."ASLB_048". Also the DataTable RowName. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FName biomeID;
 
@@ -69,10 +78,10 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FString biomeColor;
 
-	/** Mountainous / Highlands / Midlands / Lowlands / Upland Coastal / Wet Coastal. Plain FName
-	 * for now (matches this project's own precedent of starting categorization fields as FName
-	 * before formalizing into a UENUM once cross-system usage proves stable — see
-	 * FIHBuildPaletteItemRow::structureCategory). Keys the mineral-eligibility lookup. */
+	/** WWF / Shorelands / Lowlands / Midlands / Highlands / Montane / Alpine — the 7 elevation
+	 * tiers (IH-DEC-056). Plain FName for now (matches this project's own precedent of starting
+	 * categorization fields as FName before formalizing into a UENUM once cross-system usage
+	 * proves stable — see FIHBuildPaletteItemRow::structureCategory). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FName terrainTier;
 
@@ -92,11 +101,10 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	float maxSlopeDeg = 0.f;
 
-	/** False on every current row (the one row it applied to, Abysmal, was removed per IH-DEC-054)
-	 * — kept as an explicit flag rather than deleted, since a future row with no meaningful slope
-	 * band is plausible and a numeric sentinel would be the wrong way to express that (the source
-	 * chart's old "156"/"nan" slope-field sentinels were a real, already-fixed defect in earlier
-	 * drafts; this field exists specifically so that mistake can't recur). */
+	/** True on the 6 "Basin" rows (one per tier except WWF) — Basin has no real degree range
+	 * (`slopeRangeLabel="Basin"` instead), an explicit flag rather than a numeric sentinel (the
+	 * source chart's old "156"/"nan" slope-field sentinels were a real, already-fixed defect in
+	 * earlier drafts; this field exists specifically so that mistake can't recur). */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	bool bSlopeAgnostic = false;
 
@@ -104,19 +112,21 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FString slopeRangeLabel;
 
-	/** Player/designer-facing label, e.g. "High Timberland". */
+	/** Player/designer-facing label, e.g. "Highland Crags". */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FText biomeName;
 
-	/** Eligible when RealmLatitudeZone == Nordic. Not mutually exclusive with the other two zone flags. */
+	/** Always true post-IH-DEC-056 — landform rows are zone-agnostic by design; zone restriction
+	 * happens per content tag via DT_BiomeTagZoneExemption instead. Kept as a real field (not
+	 * removed) since a future landform-level zone restriction is plausible. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	bool bZoneNordic = true;
 
-	/** Eligible when RealmLatitudeZone == Temperate. */
+	/** See bZoneNordic. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	bool bZoneTemperate = true;
 
-	/** Eligible when RealmLatitudeZone == Tropical. */
+	/** See bZoneNordic. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	bool bZoneTropical = true;
 

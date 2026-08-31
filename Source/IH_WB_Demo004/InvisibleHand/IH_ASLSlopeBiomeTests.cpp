@@ -1,5 +1,5 @@
 // Copyright Invisible Hand. All Rights Reserved.
-// Automation test for DT_ASLSlopeBiome (IH-DEC-052, trimmed per IH-DEC-054) — loads the CSV
+// Automation test for DT_ASLSlopeBiome (IH-DEC-056: 48-row landform grid) — loads the CSV
 // scaffold directly (same technique as UIH_WorldBuilderDataSubsystem, but decoupled from
 // subsystem/PIE lifecycle, matching this project's convention of pure data/logic automation
 // tests, e.g. IHTerrainCellGraphTests.cpp).
@@ -44,14 +44,15 @@ bool FIHASLSlopeBiomeDataTableTest::RunTest(const FString& Parameters)
 
 	TArray<FIHASLSlopeBiomeRow*> Rows;
 	Table->GetAllRows(TEXT("ASLSlopeBiomeTest"), Rows);
-	TestEqual(TEXT("Table should have exactly 20 rows (IH-DEC-054 trim — Hydro/Stamp/WWF/Ore/SEA LEVEL rows removed)"), Rows.Num(), 20);
+	TestEqual(TEXT("Table should have exactly 48 rows (IH-DEC-056 — 7 tiers x 7 slope-types, WWF missing Basin)"), Rows.Num(), 48);
 
+	int32 BasinCount = 0;
 	int32 ZoneAgnosticCount = 0;
-	int32 SlopeAgnosticCount = 0;
 	int32 NoZoneEligibilityCount = 0;
 	double MinAslSeen = TNumericLimits<double>::Max();
 	double MaxAslSeen = TNumericLimits<double>::Lowest();
 	TSet<FString> SeenBiomeNames;
+	TMap<FName, int32> TierCounts;
 
 	for (const FIHASLSlopeBiomeRow* Row : Rows)
 	{
@@ -64,6 +65,8 @@ bool FIHASLSlopeBiomeDataTableTest::RunTest(const FString& Parameters)
 			SeenBiomeNames.Contains(Name));
 		SeenBiomeNames.Add(Name);
 
+		TierCounts.FindOrAdd(Row->terrainTier)++;
+
 		if (Row->bZoneNordic && Row->bZoneTemperate && Row->bZoneTropical)
 		{
 			++ZoneAgnosticCount;
@@ -74,7 +77,9 @@ bool FIHASLSlopeBiomeDataTableTest::RunTest(const FString& Parameters)
 		}
 		if (Row->bSlopeAgnostic)
 		{
-			++SlopeAgnosticCount;
+			++BasinCount;
+			TestEqual(FString::Printf(TEXT("%s: Basin rows should use slopeRangeLabel='Basin'"), *Row->biomeID.ToString()),
+				Row->slopeRangeLabel, FString(TEXT("Basin")));
 		}
 		else
 		{
@@ -89,13 +94,19 @@ bool FIHASLSlopeBiomeDataTableTest::RunTest(const FString& Parameters)
 	}
 
 	TestEqual(TEXT("Every row must be eligible in at least one latitude zone"), NoZoneEligibilityCount, 0);
-	// 8 zone-restricted rows survive the trim (Mid/High Tundra, Ice Floes = Nordic-only;
-	// Low/High Desert, Estuary = Temperate+Tropical; Reef = Tropical-only; High Plains =
-	// Temperate-only), so 12 of 20 remain zone-agnostic.
-	TestEqual(TEXT("12 rows should be zone-agnostic (eligible in all 3 zones)"), ZoneAgnosticCount, 12);
-	TestEqual(TEXT("No row should be slope-agnostic post-trim (the one prior case, Abysmal, was removed)"), SlopeAgnosticCount, 0);
-	TestTrue(TEXT("ASL coverage should span down to the canonical -10m coastal floor (Reef/Estuary/Delta)"), MinAslSeen <= -9.0);
+	TestEqual(TEXT("All 48 rows are zone-agnostic (IH-DEC-056 — zone restriction lives in DT_BiomeTagZoneExemption, not per-row)"), ZoneAgnosticCount, 48);
+	TestEqual(TEXT("6 Basin rows (one per tier except WWF)"), BasinCount, 6);
+	TestTrue(TEXT("ASL coverage should span down to the WWF floor (-25m)"), MinAslSeen <= -24.0);
 	TestTrue(TEXT("ASL coverage should span up to the canonical 2400m apex ceiling"), MaxAslSeen >= 2399.0);
+
+	// 7 tiers, each with 7 rows except WWF (6, no Basin).
+	TestEqual(TEXT("Should have 7 distinct terrain tiers"), TierCounts.Num(), 7);
+	for (const TPair<FName, int32>& Pair : TierCounts)
+	{
+		const int32 Expected = (Pair.Key == FName(TEXT("WWF"))) ? 6 : 7;
+		TestEqual(FString::Printf(TEXT("Tier '%s' should have %d rows"), *Pair.Key.ToString(), Expected),
+			Pair.Value, Expected);
+	}
 
 	// Spot-check specific rows confirmed during this session's redesign pass.
 	auto FindRow = [&Rows](const TCHAR* BiomeName) -> const FIHASLSlopeBiomeRow*
@@ -110,44 +121,49 @@ bool FIHASLSlopeBiomeDataTableTest::RunTest(const FString& Parameters)
 		return nullptr;
 	};
 
-	if (const FIHASLSlopeBiomeRow* Tundra = FindRow(TEXT("High Tundra")))
+	if (const FIHASLSlopeBiomeRow* CoastalBasin = FindRow(TEXT("Coastal Basin")))
 	{
-		TestTrue(TEXT("High Tundra should be Nordic-eligible"), Tundra->bZoneNordic);
-		TestFalse(TEXT("High Tundra should NOT be Temperate-eligible (narrowed to Nordic-only, IH-DEC-054)"), Tundra->bZoneTemperate);
-		TestFalse(TEXT("High Tundra should NOT be Tropical-eligible"), Tundra->bZoneTropical);
+		TestTrue(TEXT("Coastal Basin should be slope-agnostic"), CoastalBasin->bSlopeAgnostic);
+		TestTrue(TEXT("Coastal Basin should carry ice/glacier tags for the Nordic-wet-basin override"),
+			CoastalBasin->features.Contains(FName(TEXT("Ice"))));
+		TestTrue(TEXT("Coastal Basin should carry default wet-basin flora (Reeds)"),
+			CoastalBasin->flora.Contains(FName(TEXT("Reeds"))));
 	}
 	else
 	{
-		AddError(TEXT("Could not find 'High Tundra' row"));
+		AddError(TEXT("Could not find 'Coastal Basin' row"));
 	}
 
-	if (const FIHASLSlopeBiomeRow* Reef = FindRow(TEXT("Reef")))
+	if (const FIHASLSlopeBiomeRow* SummitFaces = FindRow(TEXT("Summit Faces")))
 	{
-		TestFalse(TEXT("Reef should NOT be Nordic-eligible"), Reef->bZoneNordic);
-		TestTrue(TEXT("Reef should be Tropical-eligible"), Reef->bZoneTropical);
+		TestEqual(TEXT("Summit Faces should be the Alpine Sheer row"), SummitFaces->terrainTier, FName(TEXT("Alpine")));
+		TestEqual(TEXT("Summit Faces should be 81-90 deg"), SummitFaces->minSlopeDeg, 81.f);
 	}
 	else
 	{
-		AddError(TEXT("Could not find 'Reef' row"));
+		AddError(TEXT("Could not find 'Summit Faces' row"));
 	}
 
-	// Rows that should NOT exist post-trim — confirms the removal actually took, not just that
-	// the survivors are correct.
-	const TCHAR* RemovedNames[] = {
-		TEXT("River"), TEXT("Glacier"), TEXT("Glacier Runoff"), TEXT("Swamp"),
-		TEXT("Plateau"), TEXT("Harborage"), TEXT("Volcanic Rim"), TEXT("Coastal Cliffs"), TEXT("Canyon"),
-		TEXT("Deep Sea"), TEXT("Verdant"), TEXT("Shallow Sea"), TEXT("Abysmal"),
-		TEXT("Low Ore Escarpment"), TEXT("Mid Ore Escarpment"), TEXT("High Ore Escarpment"),
-		TEXT("SEA LEVEL"),
-	};
-	for (const TCHAR* Removed : RemovedNames)
+	if (const FIHASLSlopeBiomeRow* ShallowShelf = FindRow(TEXT("Shallow Shelf")))
 	{
-		TestNull(FString::Printf(TEXT("'%s' should have been removed (IH-DEC-054)"), Removed), FindRow(Removed));
+		TestEqual(TEXT("Shallow Shelf should be the WWF Flat row"), ShallowShelf->terrainTier, FName(TEXT("WWF")));
+		TestEqual(TEXT("Shallow Shelf's ASL upper should be 0"), ShallowShelf->aslUpperM, 0.f);
+	}
+	else
+	{
+		AddError(TEXT("Could not find 'Shallow Shelf' row"));
+	}
+
+	// Confirm the old 20-row ecology names are actually gone, not just renamed duplicates.
+	const TCHAR* OldNames[] = { TEXT("Marsh"), TEXT("Reef"), TEXT("High Timberland"), TEXT("Apex Caps"), TEXT("Barren Peaks") };
+	for (const TCHAR* OldName : OldNames)
+	{
+		TestNull(FString::Printf(TEXT("Old ecology-named row '%s' should be gone (IH-DEC-056 replaced it)"), OldName), FindRow(OldName));
 	}
 
 	AddInfo(FString::Printf(
-		TEXT("IHASLSlopeBiome: rows=%d zoneAgnostic=%d slopeAgnostic=%d aslRange=[%.0f,%.0f]"),
-		Rows.Num(), ZoneAgnosticCount, SlopeAgnosticCount, MinAslSeen, MaxAslSeen));
+		TEXT("IHASLSlopeBiome: rows=%d tiers=%d basins=%d zoneAgnostic=%d aslRange=[%.0f,%.0f]"),
+		Rows.Num(), TierCounts.Num(), BasinCount, ZoneAgnosticCount, MinAslSeen, MaxAslSeen));
 
 	return true;
 }

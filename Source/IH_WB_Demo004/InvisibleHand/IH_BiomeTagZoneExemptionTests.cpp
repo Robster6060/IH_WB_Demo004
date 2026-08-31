@@ -42,7 +42,7 @@ bool FIHBiomeTagZoneExemptionDataTableTest::RunTest(const FString& Parameters)
 
 	TArray<FIHBiomeTagZoneExemptionRow*> Rows;
 	Table->GetAllRows(TEXT("BiomeTagZoneExemptionTest"), Rows);
-	TestEqual(TEXT("Table should have exactly 10 seeded rows"), Rows.Num(), 10);
+	TestEqual(TEXT("Table should have exactly 14 seeded rows (IH-DEC-056 added Glacier/Reeds/Papyrus/Rice)"), Rows.Num(), 14);
 
 	TSet<FName> SeenTags;
 	int32 NordicExemptCount = 0;
