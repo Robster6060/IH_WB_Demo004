@@ -421,6 +421,48 @@ void FIHTerrainCellDiffusion::Smooth(FIHTerrainCellGraph& Graph, const double Fa
 	}
 }
 
+void FIHTerrainCellDiffusion::SmoothLandAware(
+	FIHTerrainCellGraph& Graph, const double Factor, const double LandThreshold, const double OceanNeighborWeight)
+{
+	if (Graph.Num() == 0 || Factor <= 0.0)
+	{
+		return;
+	}
+
+	TArray<double> Original;
+	Original.SetNum(Graph.Num());
+	for (int32 i = 0; i < Graph.Num(); ++i)
+	{
+		Original[i] = Graph.Cells[i].Height;
+	}
+
+	const double ClampedFactor = FMath::Clamp(Factor, 0.0, 1.0);
+	for (int32 i = 0; i < Graph.Num(); ++i)
+	{
+		const TArray<int32>& Neighbors = Graph.Cells[i].Neighbors;
+		if (Neighbors.Num() == 0)
+		{
+			continue;
+		}
+		const bool bSelfIsLand = Original[i] >= LandThreshold;
+		double NeighborAvg = 0.0;
+		for (const int32 NeighborIdx : Neighbors)
+		{
+			const double NeighborHeight = Original.IsValidIndex(NeighborIdx) ? Original[NeighborIdx] : Original[i];
+			// Land cell + sub-threshold (Ocean-side) neighbor: dampen that neighbor's pull toward
+			// the cell's OWN height by OceanNeighborWeight, instead of fully substituting it (0.0
+			// tried and reverted - froze raw coastal jitter into more fragments instead of letting
+			// it consolidate). Every Land-Land pair still averages normally either way
+			// (fragmentation-control fully preserved regardless of this weight).
+			NeighborAvg += (bSelfIsLand && NeighborHeight < LandThreshold)
+				? FMath::Lerp(Original[i], NeighborHeight, OceanNeighborWeight)
+				: NeighborHeight;
+		}
+		NeighborAvg /= Neighbors.Num();
+		Graph.Cells[i].Height = FMath::Lerp(Original[i], NeighborAvg, ClampedFactor);
+	}
+}
+
 void FIHTerrainCellDiffusion::ClassifyLandWater(FIHTerrainCellGraph& Graph, const double LandThreshold)
 {
 	for (FIHTerrainCell& Cell : Graph.Cells)

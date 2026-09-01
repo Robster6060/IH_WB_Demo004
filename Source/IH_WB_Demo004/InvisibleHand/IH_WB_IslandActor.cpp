@@ -3156,23 +3156,28 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// ONE seed, not just noisy edges. Pushing further on the one lever already proven to reduce
 	// fragmentation (Smooth cut loop count ~50% in the first attempt) rather than touching the
 	// core diffusion algorithm itself.
-	// IH-DEC-059 investigation (2026-08-31): reducing this to 4x0.30 was tried and self-tested -
-	// REVERTED. Real headless data showed landFraction got WORSE, not better (one island
-	// 0.154->0.086), because less smoothing let MORE of the underlying per-hop jitter fragmentation
-	// (Bug 3) through as separate disconnected components, which the islet-budget filter (~line
-	// 3389, calibrated against today's fragmentation pattern) then discards more of, not less. The
-	// erosion mechanism itself (this pass also flattens the summit cell, ~1.1% retention at 8x0.45)
-	// is real, but a blanket pass-count/factor reduction is the wrong lever - it fights
-	// fragmentation control and erosion with the same knob. Needs a land-aware/masked-average
-	// redesign (suppress Ocean-neighbor pull specifically, without weakening the Land-side
-	// diffusion-jitter averaging fragmentation control depends on) before retrying - not a constant
-	// tune. Back to the original, proven values pending that redesign.
+	// IH-DEC-059: a blanket pass-count/factor reduction was tried and reverted - real data showed
+	// landFraction got WORSE, because Smooth's plain neighbor-average does two jobs at once: erodes
+	// coastal land toward Ocean neighbors (unwanted) AND averages divergent land-side BFS branches
+	// together (Bug 3 fragmentation-control, needed) - reducing pass strength weakens both, and the
+	// fragmentation-control loss fed the islet-budget filter (~line 3389) more disconnected material
+	// to discard than it saved. SmoothLandAware(..., OceanNeighborWeight=0.0) (full exclusion) was
+	// then tried instead - landFraction rose, but real PIE grabs showed WORSE fragmentation
+	// ("linear relic" splinters/islets), because a coastal cell with many Ocean neighbors ended up
+	// averaging almost entirely against itself, freezing raw per-hop jitter at the coast instead of
+	// letting it consolidate. 0.35 dampens Ocean-pull instead of eliminating it - a starting
+	// hypothesis between the two known data points, self-test before trusting. Land-side averaging
+	// (and fragmentation control) is unaffected by this weight either way. LandThreshold moved up
+	// from below so it's available here. Peak/summit flattening (a different mechanism - legitimate
+	// land-side power-law decay, not Ocean-pull) is a deliberately separate, not-yet-attempted
+	// follow-up.
+	constexpr double LandThreshold = 20.0;
+	constexpr double OceanNeighborWeight = 0.35;
 	for (int32 SmoothPass = 0; SmoothPass < 8; ++SmoothPass)
 	{
-		FIHTerrainCellDiffusion::Smooth(Graph, 0.45);
+		FIHTerrainCellDiffusion::SmoothLandAware(Graph, 0.45, LandThreshold, OceanNeighborWeight);
 	}
 
-	constexpr double LandThreshold = 20.0;
 	FIHTerrainCellDiffusion::ClassifyLandWater(Graph, LandThreshold);
 
 	// Plan Addendum 12: subtle, shared-vertex-consistent boundary jitter for coastline texture.

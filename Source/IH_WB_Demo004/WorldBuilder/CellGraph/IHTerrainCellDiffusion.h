@@ -128,6 +128,15 @@ public:
 	/** Averages each cell's height toward its neighbors', blended by Factor (0 = no change, 1 = full average). */
 	static void Smooth(FIHTerrainCellGraph& Graph, double Factor);
 
+	/** IH-DEC-059: like Smooth, but a Land cell's neighbor average dampens the pull from any
+	 * neighbor below LandThreshold by OceanNeighborWeight (0 = Ocean neighbors never pull a Land
+	 * cell's height down at all - tried, reverted, froze raw coastal jitter into more fragments
+	 * instead of consolidating it; 1 = identical to plain Smooth). Land-side averaging (and the
+	 * fragmentation control it provides) is completely unaffected either way. Ocean cells still
+	 * smooth normally against all neighbors. */
+	static void SmoothLandAware(
+		FIHTerrainCellGraph& Graph, double Factor, double LandThreshold, double OceanNeighborWeight);
+
 	/** Classifies every cell Land (Height >= LandThreshold) or Ocean. Does not produce Lake (IH-DEC-019). */
 	static void ClassifyLandWater(FIHTerrainCellGraph& Graph, double LandThreshold);
 
