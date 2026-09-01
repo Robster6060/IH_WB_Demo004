@@ -2940,6 +2940,18 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 				Graph, ApexA, ApexB, /*HeightMin=*/35.0, /*HeightMax=*/55.0,
 				/*LinePower=*/0.85, /*PathRandomness=*/0.45, Stream);
 		}
+		// IH-DEC-061 investigation (2026-09-01): fixed RandRange(2,3) filler hills (matching Low's
+		// own count exactly) was tried and self-tested - REVERTED. Real headless data showed a
+		// severe, disproportionate blowup on Volc specifically (ABBEY3 island0: landFraction
+		// 0.059->0.187, loops 36->161; APART2: landFraction up to 0.330, loops 260, wwfAcres
+		// collapsed to 2 - the same broken-shelf-ring signature IH-DEC-057 hit). Low's own
+		// RandRange(2,3) is safe because it's Low's ORIGINAL baseline, not an addition on top of a
+		// near-empty starting point - Volc going from 1 hill to 1+2or3 is a 3-4x RELATIVE hill-count
+		// increase, apparently enough to cross the same non-linear "percolation" coverage threshold
+		// the reverted IH-DEC-057 attempt hit at a much larger scale. "Matching Low's fixed count"
+		// was not actually low-risk for a profile whose baseline is this sparse. Needs a much
+		// smaller starting count (e.g. exactly 1) and independent self-test per profile before
+		// retrying - not assumed safe by analogy to Low.
 		break;
 	}
 	case EIHIslandProfile::Volc:
@@ -2956,6 +2968,15 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 				Graph, { ConeSeed }, /*HeightMin=*/-18.0, /*HeightMax=*/-10.0,
 				FMath::Clamp(AccentBlobPower - 0.05, 0.75, 0.95), Stream);
 		}
+		// IH-DEC-061 investigation (2026-09-01): fixed RandRange(2,3) filler hills was tried and
+		// self-tested - REVERTED. This is the profile that blew up worst: ABBEY3 island0 (Volc)
+		// landFraction 0.059->0.187 (loops 36->161), APART2 up to landFraction 0.330 (loops 260,
+		// wwfAcres collapsed to 2 - the same broken-shelf-ring signature IH-DEC-057 hit). Going from
+		// 1 hill (Volc's actual baseline) to 1+2or3 is a 3-4x relative hill-count increase - far
+		// more than Low ever experiences, since Low's own RandRange(2,3) IS its baseline, not an
+		// addition on top of near-nothing. See the High-profile comment above (~line 2943) for the
+		// full writeup. Needs a much smaller count (e.g. exactly 1) and independent self-test before
+		// retrying.
 		break;
 	}
 	case EIHIslandProfile::Low:
