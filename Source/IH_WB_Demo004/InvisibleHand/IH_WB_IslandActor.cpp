@@ -3226,7 +3226,39 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// from below so it's available here. Peak/summit flattening (a different mechanism - legitimate
 	// land-side power-law decay, not Ocean-pull) is a deliberately separate, not-yet-attempted
 	// follow-up.
-	constexpr double LandThreshold = 20.0;
+	// IH-DEC-062: replaces the fixed LandThreshold=20.0 with an adaptive, per-island threshold.
+	// Master-doc research (IH-DEC-028, this session) confirmed this pipeline is already a direct
+	// port of Azgaar's own heightmap-generator.ts mechanism - the "spoked island"/"few compound
+	// inlets" symptoms trace to recipe DENSITY (this project's own 2026-08-14 research: "Azgaar's
+	// own actual template recipes... use multiple hills, not one dominant blob"), not a wrong
+	// mechanism. Every attempt today to simply add more hills against the OLD fixed threshold hit
+	// the same non-linear "percolation" land-fraction blowup (IH-DEC-057/060/061), because a fixed
+	// cutoff paired with a precision-tuned recipe is fragile by construction. Azgaar's real method
+	// generates height freely from many hills, THEN picks the sea-level threshold itself, after the
+	// fact, to land on the desired land/sea ratio - the threshold absorbs whatever total height
+	// results, instead of the recipe having to hit an exact target under a rigid pre-fixed cutoff.
+	// Picking the height value at the TargetLandFractionForBox percentile (the same 0.30 already
+	// used to size this island's box, reused here rather than a second parameter) makes the box's
+	// own 30%-fill assumption true by construction, and should let genuinely richer per-profile
+	// recipes (Step 2, not yet implemented) coexist with a stable land fraction. Computed from the
+	// RAW (pre-Smooth) height field, since SmoothLandAware itself needs a threshold value as input.
+	double LandThreshold;
+	{
+		TArray<double> HeightsForThreshold;
+		HeightsForThreshold.Reserve(Graph.Num());
+		for (const FIHTerrainCell& Cell : Graph.Cells)
+		{
+			HeightsForThreshold.Add(Cell.Height);
+		}
+		HeightsForThreshold.Sort(TGreater<double>());
+		const int32 TargetLandCellCount = FMath::Clamp(
+			FMath::RoundToInt(static_cast<double>(HeightsForThreshold.Num()) * TargetLandFractionForBox),
+			1, HeightsForThreshold.Num());
+		// Clamped floor (1.0) keeps trough-carved negative regions reading as ocean regardless of
+		// the overall distribution; ceiling (500.0) guards against a pathological all-high-terrain
+		// result pushing the threshold absurdly high.
+		LandThreshold = FMath::Clamp(HeightsForThreshold[TargetLandCellCount - 1], 1.0, 500.0);
+	}
 	constexpr double OceanNeighborWeight = 0.35;
 	for (int32 SmoothPass = 0; SmoothPass < 8; ++SmoothPass)
 	{
