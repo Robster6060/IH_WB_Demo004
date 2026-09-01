@@ -112,6 +112,20 @@ public:
 		TArray<FVector2D>* OutPathSitePositionsLocalCm = nullptr);
 
 	/**
+	 * Pathfinds Start->End without carving/diffusing anything - pure geometry, for callers that
+	 * need the path's site-position array before deciding how to carve along it (e.g. a
+	 * sine-curved multi-segment trough via PickCellNearPath below). Returns false if no path was
+	 * found (mirrors AddRangeBetweenCells' own silent-no-op behavior in that case).
+	 */
+	static bool FindPathOnly(
+		const FIHTerrainCellGraph& Graph,
+		int32 StartIdx,
+		int32 EndIdx,
+		double PathRandomness,
+		FRandomStream& Stream,
+		TArray<FVector2D>& OutPathSitePositionsLocalCm);
+
+	/**
 	 * Finds the cell nearest a point sampled along a previously-recorded path (see AddRange's/
 	 * AddRangeBetweenCells' OutPath... params), offset laterally. AlongFrac in [0,1] parameterizes
 	 * position along the path (0 = start, 1 = end); LateralOffsetCm shifts perpendicular to the

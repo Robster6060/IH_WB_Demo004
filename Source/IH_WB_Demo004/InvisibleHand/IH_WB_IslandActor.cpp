@@ -3087,6 +3087,16 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		{
 			continue;
 		}
+
+		// IH-DEC-060 investigation (2026-09-01): a sine-curved multi-segment chain (5 independently
+		// re-carved segments, 10% path-length lateral amplitude) was tried and self-tested - REVERTED.
+		// Real headless data showed a severe severing regression (ABBEY3 landFraction 0.043/0.153/0.197
+		// -> 0.013/0.057/0.062, dryAcres roughly halved to quartered): chaining N independently-carved
+		// segments carves substantially MORE total trough length (and depth) than a single straight
+		// cut, and a 10%-of-span lateral swing was large enough to loop the cut through/sever thin
+		// sections. Back to the original single straight carve pending a much more conservative retry
+		// (smaller amplitude, fewer waypoints, possibly shallower depth for the extra segments) -
+		// FindPathOnly is kept (harmless, reusable primitive) but not currently called.
 		TArray<FVector2D> Path;
 		FIHTerrainCellDiffusion::AddRangeBetweenCells(
 			Graph, StartIdx, EndIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,

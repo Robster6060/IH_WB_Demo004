@@ -352,6 +352,28 @@ void FIHTerrainCellDiffusion::AddRangeBetweenCells(
 	}
 }
 
+bool FIHTerrainCellDiffusion::FindPathOnly(
+	const FIHTerrainCellGraph& Graph, const int32 StartIdx, const int32 EndIdx,
+	const double PathRandomness, FRandomStream& Stream, TArray<FVector2D>& OutPathSitePositionsLocalCm)
+{
+	using namespace IHTerrainCellDiffusionPrivate;
+
+	OutPathSitePositionsLocalCm.Reset();
+	if (!Graph.IsValidIndex(StartIdx) || !Graph.IsValidIndex(EndIdx) || StartIdx == EndIdx)
+	{
+		return false;
+	}
+
+	TArray<int32> Path;
+	if (!FindPathBetweenCells(Graph, StartIdx, EndIdx, PathRandomness, Stream, Path) || Path.Num() < 2)
+	{
+		return false;
+	}
+
+	RecordPathPositions(Graph, Path, OutPathSitePositionsLocalCm);
+	return true;
+}
+
 int32 FIHTerrainCellDiffusion::PickCellNearPath(
 	const FIHTerrainCellGraph& Graph, const TArray<FVector2D>& PathSitePositionsLocalCm,
 	const double AlongFrac, const double LateralOffsetCm, FRandomStream& Stream)
