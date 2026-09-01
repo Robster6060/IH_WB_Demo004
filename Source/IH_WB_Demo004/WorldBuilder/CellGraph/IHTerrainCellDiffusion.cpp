@@ -649,6 +649,20 @@ namespace IHTerrainCellDiffusionPrivate
 		// ineffective or actively harmful; the next attempt needs to explain why a
 		// mathematically-standard algorithm regressed a DIFFERENT predicate through the same
 		// shared function before being tried live again.
+		// IH-DEC-063 investigation (2026-09-01): widening this from 1.0 (~1cm) to 625.0 (~25cm, to
+		// match WeldNearDuplicateVertices' own epsilon) was tried and self-tested - REVERTED. Zero
+		// measurable effect (ABBEY3 island0's failure count was 104/34410 both before and after,
+		// identical to the digit), disproving "near-duplicate vertex slightly over 1cm" outright.
+		// A one-time diagnostic dump of the first 8 real failures (since removed) found TWO distinct
+		// causes, not one: ~75% of the sample shared EXACTLY 1 boundary point at 0.0000cm (a genuine
+		// single-point Voronoi pinch - 4+ cells meeting near one point instead of the usual 3 - which
+		// structurally can never satisfy this function's >=2-point "shared edge" requirement, at ANY
+		// tolerance, since there is no second point to find); the remainder shared ZERO points and
+		// were tens of thousands of cm apart (60931.9cm, 8627.7cm) despite being listed as adjacent in
+		// Cell.Neighbors - a separate, more concerning graph-topology question (why are non-adjacent
+		// cells in each other's Neighbors list at all?) that needs its own investigation before this
+		// function is touched again, given its documented history of regressions from confident-
+		// seeming fixes (see the comment block above).
 		constexpr double SharedVertexToleranceCmSq = 1.0; // 1 cm^2 -> ~1 cm positional tolerance
 
 		auto FindSharedEdge = [SharedVertexToleranceCmSq](
