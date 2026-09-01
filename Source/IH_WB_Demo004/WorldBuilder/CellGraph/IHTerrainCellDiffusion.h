@@ -126,6 +126,23 @@ public:
 		TArray<FVector2D>& OutPathSitePositionsLocalCm);
 
 	/**
+	 * IH-DEC-060: same primitive as AddRangeBetweenCells, but the seed cell sequence is
+	 * caller-supplied rather than pathfound internally - draws one height and diffuses once
+	 * across the whole list, exactly like AddRangeBetweenCells does for its own pathfound list.
+	 * For callers that build their own (e.g. curved, via FindPathOnly + PickCellNearPath) cell
+	 * sequence instead of a straight Start->End path. Duplicate indices in SeedIndices are safely
+	 * handled by the underlying diffusion's own Assigned[] guard - no caller-side dedup needed.
+	 */
+	static void DiffuseAlongCells(
+		FIHTerrainCellGraph& Graph,
+		const TArray<int32>& SeedIndices,
+		double HeightMin,
+		double HeightMax,
+		double LinePower,
+		FRandomStream& Stream,
+		TArray<FVector2D>* OutPathSitePositionsLocalCm = nullptr);
+
+	/**
 	 * Finds the cell nearest a point sampled along a previously-recorded path (see AddRange's/
 	 * AddRangeBetweenCells' OutPath... params), offset laterally. AlongFrac in [0,1] parameterizes
 	 * position along the path (0 = start, 1 = end); LateralOffsetCm shifts perpendicular to the

@@ -374,6 +374,32 @@ bool FIHTerrainCellDiffusion::FindPathOnly(
 	return true;
 }
 
+void FIHTerrainCellDiffusion::DiffuseAlongCells(
+	FIHTerrainCellGraph& Graph, const TArray<int32>& SeedIndices, const double HeightMin,
+	const double HeightMax, const double LinePower, FRandomStream& Stream,
+	TArray<FVector2D>* OutPathSitePositionsLocalCm)
+{
+	using namespace IHTerrainCellDiffusionPrivate;
+
+	if (OutPathSitePositionsLocalCm)
+	{
+		OutPathSitePositionsLocalCm->Reset();
+	}
+
+	if (SeedIndices.Num() == 0)
+	{
+		return;
+	}
+
+	const double Height = Stream.FRandRange(static_cast<float>(HeightMin), static_cast<float>(HeightMax));
+	DiffuseFromSeeds(Graph, SeedIndices, Height, LinePower, Stream);
+
+	if (OutPathSitePositionsLocalCm)
+	{
+		RecordPathPositions(Graph, SeedIndices, *OutPathSitePositionsLocalCm);
+	}
+}
+
 int32 FIHTerrainCellDiffusion::PickCellNearPath(
 	const FIHTerrainCellGraph& Graph, const TArray<FVector2D>& PathSitePositionsLocalCm,
 	const double AlongFrac, const double LateralOffsetCm, FRandomStream& Stream)

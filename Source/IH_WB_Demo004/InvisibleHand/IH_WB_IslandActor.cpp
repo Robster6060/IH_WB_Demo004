@@ -3088,22 +3088,46 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 			continue;
 		}
 
-		// IH-DEC-060 investigation (2026-09-01): a sine-curved multi-segment chain (5 independently
-		// re-carved segments, 10% path-length lateral amplitude) was tried and self-tested - REVERTED.
-		// Real headless data showed a severe severing regression (ABBEY3 landFraction 0.043/0.153/0.197
-		// -> 0.013/0.057/0.062, dryAcres roughly halved to quartered): chaining N independently-carved
-		// segments carves substantially MORE total trough length (and depth) than a single straight
-		// cut, and a 10%-of-span lateral swing was large enough to loop the cut through/sever thin
-		// sections. Back to the original single straight carve pending a much more conservative retry
-		// (smaller amplitude, fewer waypoints, possibly shallower depth for the extra segments) -
-		// FindPathOnly is kept (harmless, reusable primitive) but not currently called.
-		TArray<FVector2D> Path;
-		FIHTerrainCellDiffusion::AddRangeBetweenCells(
-			Graph, StartIdx, EndIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
-			/*LinePower=*/0.85, /*PathRandomness=*/0.35, Stream, &Path);
-		if (Path.Num() >= 2)
+		// IH-DEC-060: two chained-waypoint attempts (5 segments/10% amplitude, then 3 segments/
+		// 3%-1% amplitude with depth cut to ~1/3) were both tried and reverted - self-testing
+		// isolated the real cause: each chained AddRangeBetweenCells segment does its OWN
+		// independent pathfind and OWN independent diffusion seeding (own height draw), so N
+		// segments carve like N separate overlapping troughs, not one trough bent into a curve.
+		// Amplitude was proven NOT the risk factor (1% and 3% lost identical land); segment COUNT
+		// was. Fix: warp the single reference path's own positions sideways by a sine offset, then
+		// diffuse ONCE along that one curved cell list (new DiffuseAlongCells primitive) - this is
+		// structurally identical to how the ORIGINAL straight carve already works (one height draw,
+		// one DiffuseFromSeeds call over a multi-cell seed list), just fed a bent list instead of a
+		// straight one, so it should carry a similar carving "budget" instead of multiplying it.
+		TArray<FVector2D> ReferencePath;
+		if (FIHTerrainCellDiffusion::FindPathOnly(Graph, StartIdx, EndIdx, /*PathRandomness=*/0.35, Stream, ReferencePath)
+			&& ReferencePath.Num() >= 2)
 		{
-			PrimaryTroughPaths.Add(MoveTemp(Path));
+			const double PathLengthCm = FVector2D::Distance(ReferencePath[0], ReferencePath.Last());
+			const double LateralAmplitudeCm = PathLengthCm * 0.08; // amplitude already proven safe to set visibly
+			const int32 NumSamples = ReferencePath.Num(); // match the original path's own cell-hop density
+
+			TArray<int32> WarpedIndices;
+			WarpedIndices.Reserve(NumSamples);
+			for (int32 SampleIdx = 0; SampleIdx < NumSamples; ++SampleIdx)
+			{
+				const double T = static_cast<double>(SampleIdx) / FMath::Max(1, NumSamples - 1);
+				const double Lateral = LateralAmplitudeCm * FMath::Sin(T * 2.0 * PI);
+				const int32 CellIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, ReferencePath, T, Lateral, Stream);
+				if (CellIdx != INDEX_NONE)
+				{
+					WarpedIndices.Add(CellIdx);
+				}
+			}
+
+			TArray<FVector2D> Path;
+			FIHTerrainCellDiffusion::DiffuseAlongCells(
+				Graph, WarpedIndices, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
+				/*LinePower=*/0.85, Stream, &Path);
+			if (Path.Num() >= 2)
+			{
+				PrimaryTroughPaths.Add(MoveTemp(Path));
+			}
 		}
 	}
 
