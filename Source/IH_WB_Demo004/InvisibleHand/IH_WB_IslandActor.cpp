@@ -3186,20 +3186,63 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// ONE seed, not just noisy edges. Pushing further on the one lever already proven to reduce
 	// fragmentation (Smooth cut loop count ~50% in the first attempt) rather than touching the
 	// core diffusion algorithm itself.
-	// Terrain Stamps pivot (2026-09-01): reverted to the fixed LandThreshold=20.0 + plain Smooth
-	// (matches commit 54dfa15, the last confirmed WWF-welded state) — IH-DEC-059's Ocean-neighbor-
-	// pull dampening and IH-DEC-062's adaptive per-island threshold (both below, superseded) were
-	// still-open self-test hypotheses ("self-test before trusting", per IH-DEC-059's own comment)
-	// layered on top of the HIGH/VOLC filler-hill tuning churn (IH-DEC-057/060/061) this same
-	// regression reverts elsewhere in this function — together they regressed the previously-working
-	// IslandMesh/ShelfMesh WWF weld. HIGH/VOLC generation is suspended in favor of player-placed
-	// Terrain Stamps (see IH_Handoff_TerrainStampsPivot_2026-09-01.md), removing the original
-	// motivation for chasing a denser/adaptive recipe against this fixed cutoff. SmoothLandAware
-	// is left in IHTerrainCellDiffusion, just unused here, in case a future pass wants it.
-	constexpr double LandThreshold = 20.0;
+	// IH-DEC-059: a blanket pass-count/factor reduction was tried and reverted - real data showed
+	// landFraction got WORSE, because Smooth's plain neighbor-average does two jobs at once: erodes
+	// coastal land toward Ocean neighbors (unwanted) AND averages divergent land-side BFS branches
+	// together (Bug 3 fragmentation-control, needed) - reducing pass strength weakens both, and the
+	// fragmentation-control loss fed the islet-budget filter (~line 3389) more disconnected material
+	// to discard than it saved. SmoothLandAware(..., OceanNeighborWeight=0.0) (full exclusion) was
+	// then tried instead - landFraction rose, but real PIE grabs showed WORSE fragmentation
+	// ("linear relic" splinters/islets), because a coastal cell with many Ocean neighbors ended up
+	// averaging almost entirely against itself, freezing raw per-hop jitter at the coast instead of
+	// letting it consolidate. 0.35 dampens Ocean-pull instead of eliminating it - a starting
+	// hypothesis between the two known data points, self-test before trusting. Land-side averaging
+	// (and fragmentation control) is unaffected by this weight either way. LandThreshold moved up
+	// from below so it's available here. Peak/summit flattening (a different mechanism - legitimate
+	// land-side power-law decay, not Ocean-pull) is a deliberately separate, not-yet-attempted
+	// follow-up.
+	// IH-DEC-062: replaces the fixed LandThreshold=20.0 with an adaptive, per-island threshold.
+	// Master-doc research (IH-DEC-028, this session) confirmed this pipeline is already a direct
+	// port of Azgaar's own heightmap-generator.ts mechanism - the "spoked island"/"few compound
+	// inlets" symptoms trace to recipe DENSITY (this project's own 2026-08-14 research: "Azgaar's
+	// own actual template recipes... use multiple hills, not one dominant blob"), not a wrong
+	// mechanism. Every attempt today to simply add more hills against the OLD fixed threshold hit
+	// the same non-linear "percolation" land-fraction blowup (IH-DEC-057/060/061), because a fixed
+	// cutoff paired with a precision-tuned recipe is fragile by construction. Azgaar's real method
+	// generates height freely from many hills, THEN picks the sea-level threshold itself, after the
+	// fact, to land on the desired land/sea ratio - the threshold absorbs whatever total height
+	// results, instead of the recipe having to hit an exact target under a rigid pre-fixed cutoff.
+	// Picking the height value at the TargetLandFractionForBox percentile (the same 0.30 already
+	// used to size this island's box, reused here rather than a second parameter) makes the box's
+	// own 30%-fill assumption true by construction, and should let genuinely richer per-profile
+	// recipes (Step 2, not yet implemented) coexist with a stable land fraction. Computed from the
+	// RAW (pre-Smooth) height field, since SmoothLandAware itself needs a threshold value as input.
+	// KEPT through the Terrain Stamps pivot (2026-09-01): PIE-confirmed real fix, not reverted —
+	// real compound nested inlets/trough curvature, replacing chronic 0.04-0.21 under-fill under the
+	// old fixed threshold. The actual WWF-weld regression traces to FindSharedEdge's own residual
+	// failure rate (IH-DEC-063), which this adaptive threshold merely exposed at higher land
+	// fraction — fixed at the source below, not worked around by reverting this.
+	double LandThreshold;
+	{
+		TArray<double> HeightsForThreshold;
+		HeightsForThreshold.Reserve(Graph.Num());
+		for (const FIHTerrainCell& Cell : Graph.Cells)
+		{
+			HeightsForThreshold.Add(Cell.Height);
+		}
+		HeightsForThreshold.Sort(TGreater<double>());
+		const int32 TargetLandCellCount = FMath::Clamp(
+			FMath::RoundToInt(static_cast<double>(HeightsForThreshold.Num()) * TargetLandFractionForBox),
+			1, HeightsForThreshold.Num());
+		// Clamped floor (1.0) keeps trough-carved negative regions reading as ocean regardless of
+		// the overall distribution; ceiling (500.0) guards against a pathological all-high-terrain
+		// result pushing the threshold absurdly high.
+		LandThreshold = FMath::Clamp(HeightsForThreshold[TargetLandCellCount - 1], 1.0, 500.0);
+	}
+	constexpr double OceanNeighborWeight = 0.35;
 	for (int32 SmoothPass = 0; SmoothPass < 8; ++SmoothPass)
 	{
-		FIHTerrainCellDiffusion::Smooth(Graph, 0.45);
+		FIHTerrainCellDiffusion::SmoothLandAware(Graph, 0.45, LandThreshold, OceanNeighborWeight);
 	}
 
 	FIHTerrainCellDiffusion::ClassifyLandWater(Graph, LandThreshold);

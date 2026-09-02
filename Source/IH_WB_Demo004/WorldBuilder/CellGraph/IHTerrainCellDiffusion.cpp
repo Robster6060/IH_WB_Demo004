@@ -663,11 +663,24 @@ namespace IHTerrainCellDiffusionPrivate
 		// cells in each other's Neighbors list at all?) that needs its own investigation before this
 		// function is touched again, given its documented history of regressions from confident-
 		// seeming fixes (see the comment block above).
+		//
+		// Terrain Stamps pivot (2026-09-01), IH-DEC-063 continued: the single-point-pinch class above
+		// is a MEASUREMENT bug, not a geometry bug - a genuine pinch has no real shared edge to trace
+		// at any tolerance, so FindSharedEdge correctly contributes no segment for it either way; the
+		// only thing wrong was counting/logging it alongside real failures, which made a ~26-real-case
+		// anomaly (the non-adjacent-Neighbors class, still open, unfixed) look like a 104-case one.
+		// Split the counters below so the still-open class stays visible and isolated, without
+		// touching Segments/loop-chaining behavior at all - zero risk to the geometry this function's
+		// own history warns against touching lightly. The non-adjacent-Neighbors class itself (why
+		// Cell.Neighbors, built from Delaunay adjacency in IHTerrainCellGraphGenerator.cpp, can list a
+		// site pair whose clipped Voronoi cells share no boundary point) is NOT fixed here - it needs
+		// its own investigation with real self-test data, not a blind change to triangulation/clipping
+		// code with no live verification.
 		constexpr double SharedVertexToleranceCmSq = 1.0; // 1 cm^2 -> ~1 cm positional tolerance
 
 		auto FindSharedEdge = [SharedVertexToleranceCmSq](
 			const TArray<FVector2D>& BoundaryA, const TArray<FVector2D>& BoundaryB,
-			FVector2D& OutP0, FVector2D& OutP1) -> bool
+			FVector2D& OutP0, FVector2D& OutP1, int32& OutSharedPointCount) -> bool
 		{
 			TArray<FVector2D> Shared;
 			for (const FVector2D& A : BoundaryA)
@@ -685,6 +698,7 @@ namespace IHTerrainCellDiffusionPrivate
 					break;
 				}
 			}
+			OutSharedPointCount = Shared.Num();
 			if (Shared.Num() < 2)
 			{
 				return false;
@@ -707,6 +721,7 @@ namespace IHTerrainCellDiffusionPrivate
 		// boundaries merely coincide at one point (a geometric artifact, not a topological pinch).
 		TArray<TPair<int32, int32>> SegmentCellPairs;
 		int32 FailedSharedEdgeCount = 0;
+		int32 PinchPointSkipCount = 0; // genuine single-point Voronoi pinches - expected, not a failure
 		int32 CrossBoundaryPairCount = 0;
 		for (int32 CellIdx = 0; CellIdx < Graph.Num(); ++CellIdx)
 		{
@@ -728,10 +743,15 @@ namespace IHTerrainCellDiffusionPrivate
 				}
 				++CrossBoundaryPairCount;
 				FVector2D P0, P1;
-				if (FindSharedEdge(Cell.Boundary, Neighbor.Boundary, P0, P1))
+				int32 SharedPointCount = 0;
+				if (FindSharedEdge(Cell.Boundary, Neighbor.Boundary, P0, P1, SharedPointCount))
 				{
 					Segments.Add(TPair<FVector2D, FVector2D>(P0, P1));
 					SegmentCellPairs.Add(TPair<int32, int32>(CellIdx, NeighborIdx));
+				}
+				else if (SharedPointCount == 1)
+				{
+					++PinchPointSkipCount;
 				}
 				else
 				{
@@ -741,9 +761,12 @@ namespace IHTerrainCellDiffusionPrivate
 		}
 		if (FailedSharedEdgeCount > 0)
 		{
+			// Real anomaly, still open (IH-DEC-063): zero shared boundary points despite being listed
+			// in each other's Cell.Neighbors - a Delaunay-adjacency/Voronoi-clipping question in
+			// IHTerrainCellGraphGenerator.cpp, not something this function can or should paper over.
 			UE_LOG(LogTemp, Warning,
-				TEXT("IHTerrainCellDiffusion::TraceBoundaryLoops: FindSharedEdge FAILED for %d/%d cross-boundary cell pairs (genuine coastline edges silently dropped)"),
-				FailedSharedEdgeCount, CrossBoundaryPairCount);
+				TEXT("IHTerrainCellDiffusion::TraceBoundaryLoops: FindSharedEdge FAILED for %d/%d cross-boundary cell pairs (genuine coastline edges silently dropped; %d additional single-point Voronoi pinches skipped harmlessly, not counted here)"),
+				FailedSharedEdgeCount, CrossBoundaryPairCount, PinchPointSkipCount);
 		}
 
 
