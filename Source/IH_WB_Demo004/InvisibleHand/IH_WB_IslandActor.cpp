@@ -28,6 +28,14 @@ bool AIH_WB_IslandActor::bAslContourRibbonBakeDeferred = false;
 
 namespace IH_WB_IslandActorPrivate
 {
+	/** IH-DEC-058: gamma applied to land-vertex NormalizedHeight (Gamma<1 lifts low/mid
+	 * elevations). Single source of truth for both IslandMesh's own vertex-Z formula
+	 * (BuildMeshesFromCellGraph) and BuildWwfShelfSection's coastal seam-matching formula below —
+	 * those two drifted out of sync once before (IslandMesh gained this gamma curve, ShelfMesh's
+	 * match formula didn't), silently reopening the IslandMesh/ShelfMesh seam gap `54dfa15` had
+	 * fixed. Change this value here only; never duplicate it as a second local constant. */
+	static constexpr double IslandHeightReshapeGamma = 0.6;
+
 	static int64 AcresFromAreaKm2(float InAreaKm2)
 	{
 		const double M2 = static_cast<double>(InAreaKm2) * 1.0e6;
@@ -650,8 +658,11 @@ namespace IH_WB_IslandActorPrivate
 				{
 					const double LandSmoothedRaw = LandAccum->Value > 0
 						? LandAccum->Key / LandAccum->Value : LandThresholdParam;
-					const double NormalizedHeight =
+					const double LinearNormalizedHeight =
 						FMath::Clamp((LandSmoothedRaw - LandThresholdParam) / HeightSpanParam, 0.0, 1.0);
+					// Must match IslandMesh's own vertex-Z formula exactly (IH-DEC-058 gamma
+					// included) - see IslandHeightReshapeGamma's own comment above.
+					const double NormalizedHeight = FMath::Pow(LinearNormalizedHeight, IslandHeightReshapeGamma);
 					FinalZCm = FMath::Max(1.f, static_cast<float>(NormalizedHeight) * SummitTopZCmParam);
 				}
 				else
@@ -3086,19 +3097,14 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		return BestIdx;
 	};
 
-	// IH-DEC-055 acreage raise (128k->512k) exposed a real gap: trough COUNT never scaled with
-	// island size (only cell density did, via fixed TargetCellWidthCm), so real production islands
-	// at the new larger scale got the exact same fixed count as the old ~10-20km islands this was
-	// tuned against - spread across a much bigger landmass, that reads as a few long radiating
-	// trenches ("starfish") instead of organic compound nesting. Reuses the same HopRadius/
-	// ReferenceHopRadius signal as MainBlobPower/AccentBlobPower above (proven pattern in this same
-	// function) rather than a new size metric. Deliberately sqrt-scaled with a low cap, not linear:
-	// a documented severing incident (3 troughs cut a thin landmass into 2-3 disconnected pieces,
-	// see the AddRangeBetweenCells comment below) is why this was 2, not 3, in the first place -
-	// conservative here on purpose, meant to be pushed further only after real-seed PIE self-testing
-	// confirms no new severing at the new scale.
-	const double TroughScale = FMath::Sqrt(HopRadius / ReferenceHopRadius);
-	const int32 NumPrimaryTroughs = FMath::Clamp(FMath::RoundToInt(2.0 * TroughScale), 2, 4);
+	// LOW-island stabilization (2026-09-02): reverted to the fixed trough count (matches the
+	// IH_WB_Demo003 fork point, commit 96273db) - the IH-DEC-055 size-scaling attempt above
+	// (real PIE evidence: a harsh radiating "starburst" look at the new 512,000-acre scale,
+	// contradicting this comment's own untested "should reduce starfish look" reasoning) is
+	// reverted alongside the LandThreshold/Smooth revert below - real PIE evidence overrides the
+	// paper reasoning that motivated it. See IH_Canonical_Decisions.md's LOW-island-stabilization
+	// entry for the full comparison and the known under-fill risk this revert carries.
+	constexpr int32 NumPrimaryTroughs = 2;
 	TArray<TArray<FVector2D>> PrimaryTroughPaths;
 	for (int32 i = 0; i < NumPrimaryTroughs; ++i)
 	{
@@ -3134,9 +3140,8 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// same coastal window, an independent statistical layer per Azgaar's own layering mechanism
 	// (heightmap-templates.ts), not an explicit hierarchy - was missing entirely. Porting the
 	// test's own proven window/LinePower/height values directly rather than re-deriving them.
-	const int32 NumSubInlets = FMath::Clamp(FMath::RoundToInt(2.0 * TroughScale), 2, 4);
 	FIHTerrainCellDiffusion::AddRange(
-		Graph, NumSubInlets, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
+		Graph, /*Count=*/2, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
 		FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), /*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream);
 
 	// Cove-scale daughter troughs biased toward a primary trough's path - the compound
@@ -3186,63 +3191,25 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// ONE seed, not just noisy edges. Pushing further on the one lever already proven to reduce
 	// fragmentation (Smooth cut loop count ~50% in the first attempt) rather than touching the
 	// core diffusion algorithm itself.
-	// IH-DEC-059: a blanket pass-count/factor reduction was tried and reverted - real data showed
-	// landFraction got WORSE, because Smooth's plain neighbor-average does two jobs at once: erodes
-	// coastal land toward Ocean neighbors (unwanted) AND averages divergent land-side BFS branches
-	// together (Bug 3 fragmentation-control, needed) - reducing pass strength weakens both, and the
-	// fragmentation-control loss fed the islet-budget filter (~line 3389) more disconnected material
-	// to discard than it saved. SmoothLandAware(..., OceanNeighborWeight=0.0) (full exclusion) was
-	// then tried instead - landFraction rose, but real PIE grabs showed WORSE fragmentation
-	// ("linear relic" splinters/islets), because a coastal cell with many Ocean neighbors ended up
-	// averaging almost entirely against itself, freezing raw per-hop jitter at the coast instead of
-	// letting it consolidate. 0.35 dampens Ocean-pull instead of eliminating it - a starting
-	// hypothesis between the two known data points, self-test before trusting. Land-side averaging
-	// (and fragmentation control) is unaffected by this weight either way. LandThreshold moved up
-	// from below so it's available here. Peak/summit flattening (a different mechanism - legitimate
-	// land-side power-law decay, not Ocean-pull) is a deliberately separate, not-yet-attempted
-	// follow-up.
-	// IH-DEC-062: replaces the fixed LandThreshold=20.0 with an adaptive, per-island threshold.
-	// Master-doc research (IH-DEC-028, this session) confirmed this pipeline is already a direct
-	// port of Azgaar's own heightmap-generator.ts mechanism - the "spoked island"/"few compound
-	// inlets" symptoms trace to recipe DENSITY (this project's own 2026-08-14 research: "Azgaar's
-	// own actual template recipes... use multiple hills, not one dominant blob"), not a wrong
-	// mechanism. Every attempt today to simply add more hills against the OLD fixed threshold hit
-	// the same non-linear "percolation" land-fraction blowup (IH-DEC-057/060/061), because a fixed
-	// cutoff paired with a precision-tuned recipe is fragile by construction. Azgaar's real method
-	// generates height freely from many hills, THEN picks the sea-level threshold itself, after the
-	// fact, to land on the desired land/sea ratio - the threshold absorbs whatever total height
-	// results, instead of the recipe having to hit an exact target under a rigid pre-fixed cutoff.
-	// Picking the height value at the TargetLandFractionForBox percentile (the same 0.30 already
-	// used to size this island's box, reused here rather than a second parameter) makes the box's
-	// own 30%-fill assumption true by construction, and should let genuinely richer per-profile
-	// recipes (Step 2, not yet implemented) coexist with a stable land fraction. Computed from the
-	// RAW (pre-Smooth) height field, since SmoothLandAware itself needs a threshold value as input.
-	// KEPT through the Terrain Stamps pivot (2026-09-01): PIE-confirmed real fix, not reverted —
-	// real compound nested inlets/trough curvature, replacing chronic 0.04-0.21 under-fill under the
-	// old fixed threshold. The actual WWF-weld regression traces to FindSharedEdge's own residual
-	// failure rate (IH-DEC-063), which this adaptive threshold merely exposed at higher land
-	// fraction — fixed at the source below, not worked around by reverting this.
-	double LandThreshold;
-	{
-		TArray<double> HeightsForThreshold;
-		HeightsForThreshold.Reserve(Graph.Num());
-		for (const FIHTerrainCell& Cell : Graph.Cells)
-		{
-			HeightsForThreshold.Add(Cell.Height);
-		}
-		HeightsForThreshold.Sort(TGreater<double>());
-		const int32 TargetLandCellCount = FMath::Clamp(
-			FMath::RoundToInt(static_cast<double>(HeightsForThreshold.Num()) * TargetLandFractionForBox),
-			1, HeightsForThreshold.Num());
-		// Clamped floor (1.0) keeps trough-carved negative regions reading as ocean regardless of
-		// the overall distribution; ceiling (500.0) guards against a pathological all-high-terrain
-		// result pushing the threshold absurdly high.
-		LandThreshold = FMath::Clamp(HeightsForThreshold[TargetLandCellCount - 1], 1.0, 500.0);
-	}
-	constexpr double OceanNeighborWeight = 0.35;
+	// LOW-island stabilization (2026-09-02): reverted to the fixed LandThreshold=20.0 + plain
+	// Smooth (matches the IH_WB_Demo003 fork point, commit 96273db) — this session first kept
+	// IH-DEC-062's adaptive per-island threshold (its own decision-record text called it
+	// PIE-confirmed-good: real compound nested inlets/trough curvature, fixing chronic
+	// 0.04-0.21 under-fill), reasoning the actual WWF-weld regression traced to FindSharedEdge's
+	// residual failure rate (IH-DEC-063) instead. That reasoning was sound against the paper
+	// record, but real PIE evidence at the 512,000-acre scale it actually matters at contradicts
+	// it: islands read as a harsh, hard-edged radiating "starburst," not the clean compound-inlet
+	// shapes IH_WB_Demo003 produces. Real visual evidence overrides the paper trail. KNOWN RISK,
+	// flagged for the next PIE pass: this fixed threshold was never tuned/tested at 512,000 acres
+	// (only at Demo003's original 128,000) — it's exactly what produced the chronic under-fill
+	// IH-DEC-062 was built to fix, at this same larger scale. If under-fill reappears rather than
+	// the starburst clearing up, the next diagnostic step is testing this same algorithm at
+	// Demo003's original 128,000-acre scale to isolate algorithm from scale, before reaching for
+	// a size-aware (not fully adaptive) threshold instead of either extreme.
+	constexpr double LandThreshold = 20.0;
 	for (int32 SmoothPass = 0; SmoothPass < 8; ++SmoothPass)
 	{
-		FIHTerrainCellDiffusion::SmoothLandAware(Graph, 0.45, LandThreshold, OceanNeighborWeight);
+		FIHTerrainCellDiffusion::Smooth(Graph, 0.45);
 	}
 
 	FIHTerrainCellDiffusion::ClassifyLandWater(Graph, LandThreshold);
@@ -4090,8 +4057,10 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 			// Land vs. Ocean per cell (~line 3213) - this can never move the coastline, change dry
 			// acreage, or add coastline loops (unlike the reverted IH-DEC-057 approach), and the
 			// single highest cell still hits SummitTopZCm exactly (Pow(1.0, Gamma) == 1.0).
-			constexpr double HeightReshapeGamma = 0.6;
-			const double NormalizedHeight = FMath::Pow(LinearNormalizedHeight, HeightReshapeGamma);
+			// Shared constant (IH_WB_IslandActorPrivate::IslandHeightReshapeGamma) - BuildWwfShelfSection's
+			// coastal seam-matching formula must use the exact same value, see its own comment.
+			const double NormalizedHeight = FMath::Pow(
+				LinearNormalizedHeight, IH_WB_IslandActorPrivate::IslandHeightReshapeGamma);
 			const float ZCm = FMath::Max(1.f, static_cast<float>(NormalizedHeight) * SummitTopZCm);
 			Vertices.Add(FVector(P.X, P.Y, ZCm));
 			Normals.Add(FVector(0.0, 0.0, 1.0)); // placeholder - recomputed below from the smoothed surface
