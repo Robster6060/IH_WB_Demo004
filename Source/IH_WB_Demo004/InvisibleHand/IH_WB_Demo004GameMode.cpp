@@ -1356,19 +1356,19 @@ void AIH_WB_Demo004GameMode::SpawnIslandsFromGameInstance()
 		const FVector IslandLoc(WorldXY.X, WorldXY.Y, 0.f);
 		const float SemiMajorCm = IslandSemiMajorCm.IsValidIndex(IslandIdx) ? IslandSemiMajorCm[IslandIdx] : 30000.f;
 		const float AreaKm2 = IslandAreasKm2.IsValidIndex(IslandIdx) ? IslandAreasKm2[IslandIdx] : 1.f;
-		EIHIslandProfile Profile = IHPickIslandProfile321(MasterSeed, IslandIdx);
-		if (GI && GI->GetMapSeedPhase1().bSuccess && GI->GetMapSeedPhase1().SpawnPlans.IsValidIndex(IslandIdx))
-		{
-			switch (GI->GetMapSeedPhase1().SpawnPlans[IslandIdx].TemplateType)
-			{
-			case EIHIslandTemplateType::High: Profile = EIHIslandProfile::High; break;
-			case EIHIslandTemplateType::Volcanic: Profile = EIHIslandProfile::Volc; break;
-			default: Profile = EIHIslandProfile::Low; break;
-			}
-		}
+		// HIGH/VOLC suspended (IH-DEC-064), fully retired here: procedural HIGH/VOLC generation
+		// is replaced by player-placed Terrain Stamps - every island now generates via the Low
+		// profile. EIHIslandTemplateType's own weights are separately collapsed to 100%-Low
+		// (IHMapSeedFrameworkTypes.h) so SpawnPlans[].TemplateType never resolves to anything else
+		// either - this hardcode and that weight collapse are two halves of the same guarantee.
+		const EIHIslandProfile Profile = EIHIslandProfile::Low;
 
-		const float OrganicSummitM = IHComputeTargetSummitMeters(AreaKm2, Profile);
-		const float SummitZCm = OrganicSummitM * 100.f;
+		// Bug fix, same pass: this used to call IHComputeTargetSummitMeters(AreaKm2, Profile) - an
+		// older, separate formula (profile-capped 50-620m) that was never actually replaced when
+		// ComputeSummitTopZCmForAreas (IH-DEC-052/055, real 2400m-ceiling formula) was wired in
+		// above (line ~1312) - that array was computed and silently discarded every regen. Now
+		// reads the real, already-computed value instead.
+		const float SummitZCm = SummitTopZCm.IsValidIndex(IslandIdx) ? SummitTopZCm[IslandIdx] : 14000.f;
 
 		AIH_WB_IslandActor* Island = World->SpawnActor<AIH_WB_IslandActor>(
 			AIH_WB_IslandActor::StaticClass(),

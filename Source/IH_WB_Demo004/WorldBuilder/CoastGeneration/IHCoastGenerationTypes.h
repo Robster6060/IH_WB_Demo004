@@ -3,12 +3,16 @@
 
 #include "CoreMinimal.h"
 
-/** Island internal topography profile (3:2:1 Low:High:Volc). Independent of coastline shape. */
+/**
+ * Island internal topography profile. HIGH/VOLC retired (IH-DEC-064/069): procedural HIGH/VOLC
+ * generation is replaced by player-placed Terrain Stamps, not by anything in this pipeline - every
+ * island generates via Low. Kept as a single-value enum (not collapsed to a bare bool/removed)
+ * since ApplyTankLayout/BuildMeshesFromCellGraph's Profile parameter and switch are still real,
+ * live call sites - reducing churn on those signatures for a suspension, not the enum's role.
+ */
 enum class EIHIslandProfile : uint8
 {
-	Low,
-	High,
-	Volc
+	Low
 };
 
 /** C1 → Phase H: Firth-head snap target for large river spline actors. */
@@ -101,47 +105,9 @@ struct FIHHeightfieldCoastResult
 	}
 };
 
-/** Weighted 3:2:1 profile pick from master seed + island index. */
-inline EIHIslandProfile IHPickIslandProfile321(int32 MasterSeed, int32 IslandIndex)
-{
-	const uint32 H = static_cast<uint32>(MasterSeed) ^ (static_cast<uint32>(IslandIndex + 1) * 2654435761u);
-	const uint32 Bucket = H % 6u;
-	if (Bucket == 5u) { return EIHIslandProfile::Volc; }
-	if (Bucket >= 3u) { return EIHIslandProfile::High; }
-	return EIHIslandProfile::Low;
-}
-
-/**
- * Organic summit height (m ASL) from waterline area + Low/High/Volc H/D table.
- * D_km = 2 * sqrt(Area_km2 / pi); H = clamp(H/D * D_m).
- * H/D ratios are φ-derived lookup constants (no runtime φ math):
- * Low=1/φ^5, High=1/φ^4, Volc=1/φ^3.
- */
-inline float IHComputeTargetSummitMeters(float AreaKm2, EIHIslandProfile Profile)
-{
-	const float Area = FMath::Max(AreaKm2, 0.05f);
-	const float DiameterM = 2000.f * FMath::Sqrt(Area / PI);
-	// Baked φ^{-n} constants (φ = 1.6180339887…).
-	constexpr float InvPhi5 = 0.0901699437f; // Low
-	constexpr float InvPhi4 = 0.1458980338f; // High
-	constexpr float InvPhi3 = 0.2360679775f; // Volc
-	float Ratio = InvPhi5;
-	float MinH = 50.f;
-	float MaxH = 180.f;
-	switch (Profile)
-	{
-	case EIHIslandProfile::High:
-		Ratio = InvPhi4;
-		MinH = 160.f;
-		MaxH = 420.f;
-		break;
-	case EIHIslandProfile::Volc:
-		Ratio = InvPhi3;
-		MinH = 240.f;
-		MaxH = 620.f;
-		break;
-	default:
-		break;
-	}
-	return FMath::Clamp(Ratio * DiameterM, MinH, MaxH);
-}
+// IH-DEC-064/069: IHPickIslandProfile321 (3:2:1 weighted High/Volc/Low pick) and
+// IHComputeTargetSummitMeters (old profile-capped 50-620m summit formula, superseded by
+// IHSeedIslandLibrary::ComputeSummitTopZCmForAreas but never actually disconnected from its one
+// real call site until this pass - IH_WB_Demo004GameMode.cpp's RegenerateIslandsFromSeed) are
+// both retired. Every island resolves to EIHIslandProfile::Low directly; summit height comes
+// from the already-computed ComputeSummitTopZCmForAreas array.

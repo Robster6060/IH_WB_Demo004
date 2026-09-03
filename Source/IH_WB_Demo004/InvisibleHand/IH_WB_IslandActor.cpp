@@ -2755,7 +2755,7 @@ FVector2D AIH_WB_IslandActor::LocalCmToWorldCm(const FVector2D& LocalCm) const
 void AIH_WB_IslandActor::ApplyTankLayout(int32 InTankIslandIndex, float InSemiMajorAxisCm, float InSummitTopZCm, float InAreaKm2, int32 MasterSeed)
 {
 	ApplyTankLayout(InTankIslandIndex, InSemiMajorAxisCm, InSummitTopZCm, InAreaKm2, MasterSeed,
-		IHPickIslandProfile321(MasterSeed, InTankIslandIndex));
+		EIHIslandProfile::Low);
 }
 
 void AIH_WB_IslandActor::ApplyTankLayout(int32 InTankIslandIndex, float InSemiMajorAxisCm, float InSummitTopZCm, float InAreaKm2, int32 MasterSeed, EIHIslandProfile Profile)
@@ -2886,138 +2886,54 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 			TriangleCellIndices.Add(i);
 		}
 	}
-	auto FindNearestCellIdx = [&Graph](const FVector2D& Point) -> int32
-	{
-		int32 Best = INDEX_NONE;
-		double BestDistSq = TNumericLimits<double>::Max();
-		for (int32 i = 0; i < Graph.Num(); ++i)
-		{
-			const double DistSq = FVector2D::DistSquared(Graph.Cells[i].SitePos, Point);
-			if (DistSq < BestDistSq)
-			{
-				BestDistSq = DistSq;
-				Best = i;
-			}
-		}
-		return Best;
-	};
+	// FindNearestCellIdx (found the cell nearest a triangle-vertex-derived point, e.g. TriVerts[0]/
+	// [2]) removed alongside HIGH/VOLC (IH-DEC-064/069) - it had no other caller; Low seeds from
+	// TriangleCellIndices directly, never needed nearest-point lookup.
 
-	// Vertex 0 carries the smallest angle-ratio share (1, of 1:phi:phi^2) - the most acute corner,
-	// used as the single cone seed for Volc. Vertices 0/2 (smallest and largest angle) tend to be
-	// the most spatially separated in this construction, used as the two ridge summits for High.
+	// HIGH/VOLC retired (IH-DEC-064/069) - the two-summit-ridgeline (High) and single-cone (Volc)
+	// seeding that used to live here (TriVerts[0]/[2], the triangle's extreme corners) is gone;
+	// only Low's interior-point seeding (TriangleCellIndices) remains, so the profile switch
+	// collapses to a single unconditional block. The triangle CONSTRUCTION above (TriVerts,
+	// TriangleCellIndices) stays - Low still needs it, it was never High/Volc-exclusive.
 	//
-	// Plan Addendum 6: originally seeded exactly AT the triangle's vertices. User reported the
-	// coastline reading as "too overpowering"/geometric on 3 of 6 screenshots, plus a reticle
-	// offset on High/Volc islands - both trace to seeding right at the extreme corners, away from
-	// the triangle's centroid (which equals BuildParams.CenterLocalCm exactly, since the earlier
-	// rotation step rotates the triangle about its own centroid then recenters there - see the
-	// TriVerts rotation loop above). Pulling seed points partway inward softens the geometric
-	// read (more hops of organic power-law diffusion before reaching open water) while keeping
-	// enough asymmetry for the profile shapes to still read distinctly.
-	const double InwardPullFrac = 0.35;
-	const FVector2D TriCentroidWorld = BuildParams.CenterLocalCm;
-	switch (CachedProfile)
+	// Gentle slopes, broad central highlands (canon). Previously seeded the WHOLE triangle
+	// interior at once - many co-seeded points collapsed the effective hop-radius the diffusion
+	// needed to travel, so the coastline traced close to the triangle's own straight edges
+	// instead of the organic, jitter-shaped look the user preferred (plan Addendum 6). Switched
+	// to sparse point-seeds instead - 1 primary + a scaled number of accents drawn from within
+	// the triangle, mirroring the original "1 main + N accent hills" pattern that produced the
+	// liked circular look - this constrains seed POSITIONS to the triangle's asymmetric footprint
+	// without filling it solid, so the multi-hop power-law jitter is what shapes the coastline.
+	//
+	// LOW-island density scaling (2026-09-03, recalibrated same day after a headless self-test
+	// caught a real blowup): the fixed Stream.RandRange(2, 3) accent-hill count (unchanged since
+	// Demo003) is what produced the "starburst" look once the realm grew from 128,000 to 512,000
+	// acres - a few widely-separated hills each reaching a spike out from a mostly-empty center.
+	// AreaScale reuses the same HopRadius/ReferenceHopRadius signal MainBlobPower/AccentBlobPower
+	// already use above, SQUARED (not linear/sqrt) since HopRadius scales with island DIAMETER,
+	// not area. First attempt capped this at 40 assuming ReferenceHopRadius=20 was calibrated
+	// against a "128k-acre island" scale - wrong: at the real 512,000-acre realm's largest island
+	// (614,656 cells), AreaScale itself came out to ~384, saturating that cap immediately and
+	// producing enough hills to fill the ENTIRE sample box solid - all 3 self-tested islands
+	// logged "cell graph produced no coastline" (zero Land/Ocean boundary inside the box at all).
+	// Cap cut to 12 (from 40) - since the ratio saturates any reasonable multiplier at this scale
+	// regardless of the formula's exact shape, the cap itself is the real control lever here, not
+	// the exponent. Re-tested clean at 12 (see -RealmSeed= self-test log, same commit).
+	if (TriangleCellIndices.Num() > 0)
 	{
-	case EIHIslandProfile::High:
-	{
-		// Irregular two-summit ridgeline, one apex higher than the other (IH-DEC canon).
-		const int32 ApexA = FindNearestCellIdx(FMath::Lerp(TriVerts[0], TriCentroidWorld, InwardPullFrac));
-		const int32 ApexB = FindNearestCellIdx(FMath::Lerp(TriVerts[2], TriCentroidWorld, InwardPullFrac));
-		if (ApexA != INDEX_NONE)
-		{
-			FIHTerrainCellDiffusion::AddHillFromCellSet(
-				Graph, { ApexA }, /*HeightMin=*/60.0, /*HeightMax=*/78.0, MainBlobPower, Stream);
-		}
-		if (ApexB != INDEX_NONE)
-		{
-			FIHTerrainCellDiffusion::AddHillFromCellSet(
-				Graph, { ApexB }, /*HeightMin=*/38.0, /*HeightMax=*/52.0, MainBlobPower, Stream);
-		}
-		// Plan Addendum 18: the two apexes above were previously independent radial hills with
-		// nothing raised between them - visually two isolated mounds, not a connected ridgeline.
-		// Join them with a real saddle: height band sits below both peaks (so it reads as a
-		// saddle, not a third summit) but above LandThreshold, using the same
-		// AddRangeBetweenCells primitive daughter-trough carving already proves out (here with a
-		// positive height range instead of negative, and a tighter LinePower for a narrower
-		// ridge cross-section than a hill).
-		if (ApexA != INDEX_NONE && ApexB != INDEX_NONE)
-		{
-			// Plan Addendum 18 follow-up: user confirmed the ridge look across multiple random
-			// realms, then asked for organic curvature instead of a near-straight line -
-			// PathRandomness 0.25 -> 0.45 (winds more per hop instead of walking straight toward
-			// the target cell every step), matching the randomness range trough-carving already
-			// uses for its own organic wander.
-			FIHTerrainCellDiffusion::AddRangeBetweenCells(
-				Graph, ApexA, ApexB, /*HeightMin=*/35.0, /*HeightMax=*/55.0,
-				/*LinePower=*/0.85, /*PathRandomness=*/0.45, Stream);
-		}
-		// IH-DEC-061 investigation (2026-09-01): fixed RandRange(2,3) filler hills (matching Low's
-		// own count exactly) was tried and self-tested - REVERTED. Real headless data showed a
-		// severe, disproportionate blowup on Volc specifically (ABBEY3 island0: landFraction
-		// 0.059->0.187, loops 36->161; APART2: landFraction up to 0.330, loops 260, wwfAcres
-		// collapsed to 2 - the same broken-shelf-ring signature IH-DEC-057 hit). Low's own
-		// RandRange(2,3) is safe because it's Low's ORIGINAL baseline, not an addition on top of a
-		// near-empty starting point - Volc going from 1 hill to 1+2or3 is a 3-4x RELATIVE hill-count
-		// increase, apparently enough to cross the same non-linear "percolation" coverage threshold
-		// the reverted IH-DEC-057 attempt hit at a much larger scale. "Matching Low's fixed count"
-		// was not actually low-risk for a profile whose baseline is this sparse. Needs a much
-		// smaller starting count (e.g. exactly 1) and independent self-test per profile before
-		// retrying - not assumed safe by analogy to Low.
-		break;
-	}
-	case EIHIslandProfile::Volc:
-	{
-		// Single volcanic cone with a small dry caldera (canon): one steep, tight point seed
-		// pulled inward from the triangle's most acute vertex, then a small negative pit at the
-		// same point.
-		const int32 ConeSeed = FindNearestCellIdx(FMath::Lerp(TriVerts[0], TriCentroidWorld, InwardPullFrac));
-		if (ConeSeed != INDEX_NONE)
-		{
-			FIHTerrainCellDiffusion::AddHillFromCellSet(
-				Graph, { ConeSeed }, /*HeightMin=*/70.0, /*HeightMax=*/85.0, MainBlobPower, Stream);
-			FIHTerrainCellDiffusion::AddHillFromCellSet(
-				Graph, { ConeSeed }, /*HeightMin=*/-18.0, /*HeightMax=*/-10.0,
-				FMath::Clamp(AccentBlobPower - 0.05, 0.75, 0.95), Stream);
-		}
-		// IH-DEC-061 investigation (2026-09-01): fixed RandRange(2,3) filler hills was tried and
-		// self-tested - REVERTED. This is the profile that blew up worst: ABBEY3 island0 (Volc)
-		// landFraction 0.059->0.187 (loops 36->161), APART2 up to landFraction 0.330 (loops 260,
-		// wwfAcres collapsed to 2 - the same broken-shelf-ring signature IH-DEC-057 hit). Going from
-		// 1 hill (Volc's actual baseline) to 1+2or3 is a 3-4x relative hill-count increase - far
-		// more than Low ever experiences, since Low's own RandRange(2,3) IS its baseline, not an
-		// addition on top of near-nothing. See the High-profile comment above (~line 2943) for the
-		// full writeup. Needs a much smaller count (e.g. exactly 1) and independent self-test before
-		// retrying.
-		break;
-	}
-	case EIHIslandProfile::Low:
-	default:
-	{
-		// Gentle slopes, broad central highlands (canon). Previously seeded the WHOLE triangle
-		// interior at once - many co-seeded points collapsed the effective hop-radius the
-		// diffusion needed to travel, so the coastline traced close to the triangle's own
-		// straight edges instead of the organic, jitter-shaped look the user preferred (plan
-		// Addendum 6). Switched to sparse point-seeds instead - 1 primary + a few accents drawn
-		// from within the triangle, mirroring the original "1 main + N accent hills" pattern
-		// that produced the liked circular look - this constrains seed POSITIONS to the
-		// triangle's asymmetric footprint without filling it solid, so the multi-hop power-law
-		// jitter is what shapes the coastline again.
-		if (TriangleCellIndices.Num() > 0)
-		{
-			const int32 PrimaryIdx = TriangleCellIndices[Stream.RandRange(0, TriangleCellIndices.Num() - 1)];
-			FIHTerrainCellDiffusion::AddHillFromCellSet(
-				Graph, { PrimaryIdx }, /*HeightMin=*/50.0, /*HeightMax=*/70.0, MainBlobPower, Stream);
+		const int32 PrimaryIdx = TriangleCellIndices[Stream.RandRange(0, TriangleCellIndices.Num() - 1)];
+		FIHTerrainCellDiffusion::AddHillFromCellSet(
+			Graph, { PrimaryIdx }, /*HeightMin=*/50.0, /*HeightMax=*/70.0, MainBlobPower, Stream);
 
-			const int32 NumLowAccents = Stream.RandRange(2, 3);
-			for (int32 AccentSeedIdx = 0; AccentSeedIdx < NumLowAccents; ++AccentSeedIdx)
-			{
-				const int32 AccentIdx = TriangleCellIndices[Stream.RandRange(0, TriangleCellIndices.Num() - 1)];
-				FIHTerrainCellDiffusion::AddHillFromCellSet(
-					Graph, { AccentIdx }, /*HeightMin=*/30.0, /*HeightMax=*/50.0, MainBlobPower, Stream);
-			}
+		const double AreaScale = FMath::Square(HopRadius / ReferenceHopRadius);
+		const int32 NumLowAccents = FMath::Clamp(
+			FMath::RoundToInt(Stream.FRandRange(2.0, 3.0) * AreaScale), 2, 12);
+		for (int32 AccentSeedIdx = 0; AccentSeedIdx < NumLowAccents; ++AccentSeedIdx)
+		{
+			const int32 AccentIdx = TriangleCellIndices[Stream.RandRange(0, TriangleCellIndices.Num() - 1)];
+			FIHTerrainCellDiffusion::AddHillFromCellSet(
+				Graph, { AccentIdx }, /*HeightMin=*/30.0, /*HeightMax=*/50.0, MainBlobPower, Stream);
 		}
-		break;
-	}
 	}
 
 	// Modest accent hills near the triangle for coastal irregularity/barrier-islet character,
@@ -3097,14 +3013,19 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		return BestIdx;
 	};
 
-	// LOW-island stabilization (2026-09-02): reverted to the fixed trough count (matches the
-	// IH_WB_Demo003 fork point, commit 96273db) - the IH-DEC-055 size-scaling attempt above
-	// (real PIE evidence: a harsh radiating "starburst" look at the new 512,000-acre scale,
-	// contradicting this comment's own untested "should reduce starfish look" reasoning) is
-	// reverted alongside the LandThreshold/Smooth revert below - real PIE evidence overrides the
-	// paper reasoning that motivated it. See IH_Canonical_Decisions.md's LOW-island-stabilization
-	// entry for the full comparison and the known under-fill risk this revert carries.
-	constexpr int32 NumPrimaryTroughs = 2;
+	// LOW-island stabilization (2026-09-02) then re-scaled (2026-09-03): the fixed trough count
+	// (matching the IH_WB_Demo003 fork point, commit 96273db) was briefly restored on real PIE
+	// evidence that the IH-DEC-055 size-scaling attempt (sqrt-scaled, capped at 4) hadn't actually
+	// fixed the "starburst" look at 512,000 acres - but the starburst's real cause turned out to
+	// be the Low-profile HILL count staying fixed (see the density-scaling comment above), not
+	// trough count. Troughs are re-scaled here too, alongside that fix, deliberately more
+	// conservatively than hills: linear in diameter (HopRadius/ReferenceHopRadius, i.e. sqrt of
+	// AREA, not area itself) rather than area-proportional, since troughs are subtractive and a
+	// documented severing incident (3 troughs once cut a thin landmass into 2-3 disconnected
+	// pieces, see AddRangeBetweenCells's own comment below) makes over-carving a real risk hills
+	// don't share. Cap of 10 (was 4) is a self-test-driven starting bound, not final.
+	const double AreaScale = FMath::Square(HopRadius / ReferenceHopRadius);
+	const int32 NumPrimaryTroughs = FMath::Clamp(FMath::RoundToInt(2.0 * FMath::Sqrt(AreaScale)), 2, 10);
 	TArray<TArray<FVector2D>> PrimaryTroughPaths;
 	for (int32 i = 0; i < NumPrimaryTroughs; ++i)
 	{
@@ -3140,8 +3061,11 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// same coastal window, an independent statistical layer per Azgaar's own layering mechanism
 	// (heightmap-templates.ts), not an explicit hierarchy - was missing entirely. Porting the
 	// test's own proven window/LinePower/height values directly rather than re-deriving them.
+	// Density-scaled alongside primary troughs above (2026-09-03), same conservative
+	// diameter-proportional formula and same starting cap.
+	const int32 NumSubInlets = FMath::Clamp(FMath::RoundToInt(2.0 * FMath::Sqrt(AreaScale)), 2, 10);
 	FIHTerrainCellDiffusion::AddRange(
-		Graph, /*Count=*/2, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
+		Graph, NumSubInlets, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
 		FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), /*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream);
 
 	// Cove-scale daughter troughs biased toward a primary trough's path - the compound

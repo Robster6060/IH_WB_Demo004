@@ -44,18 +44,24 @@ struct FIHIslandTemplateWeights
 {
 	GENERATED_BODY()
 
+	// HIGH/VOLC retired (IH-DEC-064/069): weights collapsed to 100%-Low rather than removing
+	// EIHIslandTemplateType's High/Volcanic values outright - the layout-footprint math, Nav UI,
+	// and Template Gallery/Coastline Tuning dev-tool subsystem that also key off this enum stay
+	// intact and compiling, they just never see anything but Low assigned now.
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|Map Seed")
-	int32 LowWeight = 3;
+	int32 LowWeight = 6;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|Map Seed")
-	int32 HighWeight = 2;
+	int32 HighWeight = 0;
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|Map Seed")
-	int32 VolcanicWeight = 1;
+	int32 VolcanicWeight = 0;
 
+	/** Only Low is required - High/Volcanic are deliberately zero-weight (see comment above), not
+	 * an invalid/degenerate configuration. */
 	bool IsValidWeights() const
 	{
-		return LowWeight > 0 && HighWeight > 0 && VolcanicWeight > 0;
+		return LowWeight > 0;
 	}
 
 	int32 TotalWeight() const { return LowWeight + HighWeight + VolcanicWeight; }

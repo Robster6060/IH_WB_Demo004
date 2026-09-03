@@ -26,6 +26,10 @@ namespace IHInvisibleHandSpec
 	 * finding open, WWF Ocean-ON visual confirmation never done) rather than waiting on them.
 	 * Production millions remain GATED (bWBUnlockProductionCanonicalAcres).
 	 */
+	// Restored to 512,000 acres (2026-09-03) after the 128,000-acre diagnostic (2026-09-02)
+	// confirmed the starburst was a recipe-density-vs-scale mismatch, not a code defect - the Low
+	// hill/trough recipe is now density-scaled with area (IH_WB_IslandActor.cpp, see AreaScale)
+	// instead of staying fixed, so this can go back to the real target acreage.
 	static constexpr float DefaultRealmHalfExtentNSKm = 32.67f;
 	/** @deprecated Prefer DefaultRealmHalfExtentNSKm (WT-B layout AABB rename). */
 	static constexpr float DefaultTankHalfDepthKm = DefaultRealmHalfExtentNSKm;

@@ -8,8 +8,8 @@ Forked from `IH_WB_Heightmap` (`D:\Projects\UE58Projects\IH_WB_Heightmap`, commi
 
 - Preserve Arbor harness: fly camera, HUD, minimap, Island Nav, G/W/B/C/D Build Palette, Merchantman
 - RealmSeed format: `AAAAA#` (5-letter word + digit 2–7 = island count)
-- Azgaar multi-operator field composition (Low / High vibe; not Archipelago)
-- Canonical **3:2:1** Low : High : Volcanic interior profiles
+- Azgaar multi-operator field composition (not Archipelago)
+- Interior profile: **Low only** — HIGH/VOLC procedural generation retired (`IH-DEC-064`/`069`) in favor of player-placed Terrain Stamps
 - Fill interior depressions &lt; 0 ASL (no inland seas)
 - Detachable IslandMesh + contiguous Sea Shelf WWF per island
 
