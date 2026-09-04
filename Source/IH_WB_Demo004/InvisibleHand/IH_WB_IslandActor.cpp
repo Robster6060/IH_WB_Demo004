@@ -28,13 +28,24 @@ bool AIH_WB_IslandActor::bAslContourRibbonBakeDeferred = false;
 
 namespace IH_WB_IslandActorPrivate
 {
-	/** IH-DEC-058: gamma applied to land-vertex NormalizedHeight (Gamma<1 lifts low/mid
-	 * elevations). Single source of truth for both IslandMesh's own vertex-Z formula
-	 * (BuildMeshesFromCellGraph) and BuildWwfShelfSection's coastal seam-matching formula below —
-	 * those two drifted out of sync once before (IslandMesh gained this gamma curve, ShelfMesh's
-	 * match formula didn't), silently reopening the IslandMesh/ShelfMesh seam gap `54dfa15` had
-	 * fixed. Change this value here only; never duplicate it as a second local constant. */
-	static constexpr double IslandHeightReshapeGamma = 0.6;
+	/** IH-DEC-058, disabled 2026-09-03 (kept as 1.0, not deleted, so the mechanism/seam-consistency
+	 * wiring stays intact if a future pass wants it back). Gamma<1 lifts low/mid elevations -
+	 * tuned to 0.6 back when the (buggy, since-fixed) apex-height formula capped summits at
+	 * 180-620m, where the compression was mild in absolute terms. Once the real apex formula went
+	 * live the same session (up to a 2400m ceiling), the identical curve became severe: a cell
+	 * barely above sea level (LinearNormalizedHeight=0.05) rendered at Pow(0.05,0.6)=~17% of a
+	 * 2400m summit - ~400m of displayed elevation for what should read as flat beach. Real PIE
+	 * evidence: no flat beachfront/coastal-plain terrain anywhere, island interiors "ubiquitously
+	 * rugged" - not acceptable for gameplay. The curve's original justification (islands reading
+	 * flat/uniform under the old low-capped formula) is now solved more directly by the apex-
+	 * height bug fix itself (real per-island height variety from real diameter-driven summits) -
+	 * gamma reshaping on top of that is no longer needed and actively harmful at this scale.
+	 * Single source of truth for both IslandMesh's own vertex-Z formula (BuildMeshesFromCellGraph)
+	 * and BuildWwfShelfSection's coastal seam-matching formula below — those two drifted out of
+	 * sync once before (IslandMesh gained this gamma curve, ShelfMesh's match formula didn't),
+	 * silently reopening the IslandMesh/ShelfMesh seam gap `54dfa15` had fixed. Change this value
+	 * here only; never duplicate it as a second local constant. */
+	static constexpr double IslandHeightReshapeGamma = 1.0;
 
 	static int64 AcresFromAreaKm2(float InAreaKm2)
 	{
@@ -2816,8 +2827,23 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// judged on its own instead of conflated with an unstable hill-count change.
 	const double HopRadius = FMath::Max(1.0, FMath::Sqrt(static_cast<double>(Graph.Num())) * 0.5);
 	constexpr double ReferenceHopRadius = 20.0;
-	const double MainBlobPower = FMath::Clamp(FMath::Pow(0.90, ReferenceHopRadius / HopRadius), 0.80, 0.997);
-	const double AccentBlobPower = FMath::Clamp(FMath::Pow(0.88, ReferenceHopRadius / HopRadius), 0.80, 0.996);
+	// Density-scaling fallout (2026-09-03), real mechanistic root cause of the landFraction
+	// blowup (0.70-1.00 at 512,000 acres) - confirmed via DiffuseFromSeeds's own termination
+	// condition (IHTerrainCellDiffusion.cpp, "if (Abs(CurChange) <= 1.0) continue"). At this
+	// island's real HopRadius (392 for the largest ABBEY3 island, vs ReferenceHopRadius=20), the
+	// UNCLAMPED formula already approaches 1.0 (near-zero decay); the OLD clamp ceiling (0.997)
+	// still lets a SeedHeight=70 hill take ~1362 hops to decay below the diffusion's own stop
+	// threshold - over 3.4x this island's own HopRadius. Every hill floods nearly the whole graph
+	// before it can decay, regardless of hill COUNT - a prior, already-documented incident hit the
+	// identical symptom from a different trigger ("26 overlapping hills... landFraction=0.977, a
+	// nearly-solid box," comment above). Lowered ceiling to 0.98/0.978 - a starting, self-test-
+	// driven value (~210 hops to decay at HopRadius=392, about half the graph's own radius), not a
+	// final derivation. Confirmed safe for the already-validated small-scale/reference behavior:
+	// the raw (unclamped) formula's own value at HopRadius=ReferenceHopRadius is ~0.90, well below
+	// even this lowered ceiling, so it never binds there - this only constrains the large-HopRadius
+	// regime where the old ceiling was letting hills exceed the graph's own extent.
+	const double MainBlobPower = FMath::Clamp(FMath::Pow(0.90, ReferenceHopRadius / HopRadius), 0.80, 0.98);
+	const double AccentBlobPower = FMath::Clamp(FMath::Pow(0.88, ReferenceHopRadius / HopRadius), 0.80, 0.978);
 
 	// Plan Addendum 5: golden-ratio scalene seed triangle, replacing the point-seeded circular
 	// base shape. Side LENGTHS in ratio 1:phi:phi^2 are degenerate (1 + phi == phi^2 exactly, the
@@ -3013,19 +3039,19 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		return BestIdx;
 	};
 
-	// LOW-island stabilization (2026-09-02) then re-scaled (2026-09-03): the fixed trough count
-	// (matching the IH_WB_Demo003 fork point, commit 96273db) was briefly restored on real PIE
-	// evidence that the IH-DEC-055 size-scaling attempt (sqrt-scaled, capped at 4) hadn't actually
-	// fixed the "starburst" look at 512,000 acres - but the starburst's real cause turned out to
-	// be the Low-profile HILL count staying fixed (see the density-scaling comment above), not
-	// trough count. Troughs are re-scaled here too, alongside that fix, deliberately more
-	// conservatively than hills: linear in diameter (HopRadius/ReferenceHopRadius, i.e. sqrt of
-	// AREA, not area itself) rather than area-proportional, since troughs are subtractive and a
-	// documented severing incident (3 troughs once cut a thin landmass into 2-3 disconnected
-	// pieces, see AddRangeBetweenCells's own comment below) makes over-carving a real risk hills
-	// don't share. Cap of 10 (was 4) is a self-test-driven starting bound, not final.
-	const double AreaScale = FMath::Square(HopRadius / ReferenceHopRadius);
-	const int32 NumPrimaryTroughs = FMath::Clamp(FMath::RoundToInt(2.0 * FMath::Sqrt(AreaScale)), 2, 10);
+	// LOW-island stabilization (2026-09-02), re-scaled (2026-09-03), then reverted again same day:
+	// PickRandomCellInFracWindow below picks every primary trough's START from a narrow CENTER
+	// window (0.32-0.68) and its END from a wide EDGE window (0.10-0.90) - troughs are center-to-
+	// edge radial cuts BY CONSTRUCTION. Scaling their count up (2->10) didn't add nesting, it
+	// directly multiplied the number of spokes - real PIE evidence: a persisting "spindly
+	// starfish" look plus "conspicuous deep linear troughs," even after the hill-density fix
+	// (below) independently resolved the original starburst diagnosis. Recalibrating the cap
+	// (the fix that worked for hills) can't fix this - the geometry itself is radial, not a
+	// density problem. Back to IH_WB_Demo003's original fixed count - richness comes from the
+	// sub-inlet (coastal-window-biased, not radial) and daughter-trough (biased off a primary
+	// trough's own path, not center-to-edge) layers below instead, neither of which shares this
+	// radial-by-construction problem.
+	constexpr int32 NumPrimaryTroughs = 2;
 	TArray<TArray<FVector2D>> PrimaryTroughPaths;
 	for (int32 i = 0; i < NumPrimaryTroughs; ++i)
 	{
@@ -3061,11 +3087,17 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// same coastal window, an independent statistical layer per Azgaar's own layering mechanism
 	// (heightmap-templates.ts), not an explicit hierarchy - was missing entirely. Porting the
 	// test's own proven window/LinePower/height values directly rather than re-deriving them.
-	// Density-scaled alongside primary troughs above (2026-09-03), same conservative
-	// diameter-proportional formula and same starting cap.
-	const int32 NumSubInlets = FMath::Clamp(FMath::RoundToInt(2.0 * FMath::Sqrt(AreaScale)), 2, 10);
+	// Primary troughs reverted to a fixed 2 above (2026-09-03, radial-spoke fix). That alone caused
+	// a severe regression (landFraction ~1.0), self-test-caught - but the real cause turned out to
+	// be MainBlobPower/AccentBlobPower's clamp ceiling (see above), not a missing negative-carving
+	// counterweight: at this island's real HopRadius, each hill was flooding nearly the entire
+	// graph regardless of trough count, since its diffusion couldn't decay within the graph's own
+	// extent. Sub-inlets were scaled up here as a workaround before that root cause was found -
+	// with BlobPower now properly bounded (hills decay within a reasonable fraction of HopRadius
+	// again), that workaround overshot HARD the other way (landFraction 0.02-0.14, self-test-
+	// caught) - reverted back to the original fixed count, matching IH_WB_Demo003.
 	FIHTerrainCellDiffusion::AddRange(
-		Graph, NumSubInlets, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
+		Graph, /*Count=*/2, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
 		FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), /*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream);
 
 	// Cove-scale daughter troughs biased toward a primary trough's path - the compound
