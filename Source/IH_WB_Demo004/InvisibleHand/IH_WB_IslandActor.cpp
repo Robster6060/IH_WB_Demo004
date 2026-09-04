@@ -3147,6 +3147,20 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// targeting further down (Ask 2) - was previously recomputed per-primary-trough-iteration.
 	const double IslandDiagonalCm = (Graph.BoundsMaxLocalCm - Graph.BoundsMinLocalCm).Size();
 
+	// 2026-09-04 (round 7): widening LinePower (below) as a FLAT constant for every island size
+	// hit the exact "calibrated at one scale, applied uniformly" failure this session already
+	// root-caused once for BlobPower (IH-DEC-076) - self-test caught it directly: GIZMO7's smallest
+	// island's landFraction dropped to 0.038 (from a healthy 0.103 pre-widening), a real near-
+	// under-fill regression, while larger islands stayed healthy. A wider cross-section eats
+	// proportionally more of a small island's own small area than a large one's. Fixed the same way
+	// BlobPower was: scale LinePower with this island's own HopRadius (already computed above for
+	// BlobPower, reused here) instead of a flat value - small islands (low HopRadius) get a
+	// narrower, closer-to-original cross-section; large islands (HopRadius near or above the
+	// ABBEY3/GIZMO7 "big island" reference of ~350) get the full widened reach.
+	const double TroughWidthSizeScale = FMath::Clamp(HopRadius / 350.0, 0.0, 1.0);
+	const double PrimaryTroughLinePower = FMath::Lerp(0.80, 0.90, TroughWidthSizeScale);
+	const double SubInletTroughLinePower = FMath::Lerp(0.75, 0.83, TroughWidthSizeScale);
+
 	// 2026-09-04 (round 4): CANON CORRECTION, see this session's own IH-DEC entry. Earlier rounds'
 	// comments here claimed "continuous trough curvature is Terrain Stamps' job" as a standing
 	// 2026-09-01 decision - checked directly against IH_Canonical_Decisions.md this round and that
@@ -3363,8 +3377,24 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 
 		if (ChosenSeedIndices.Num() >= 2)
 		{
+			// 2026-09-04 (round 7): IH-DEC-082 fixed continuity (a real hop-connected seed chain,
+			// no more gaps/craters) but the RESULT read as "long narrow trenches" - continuity and
+			// WIDTH are yet another pair of properties this mechanism conflates, same lesson as
+			// round 6's "density != connectivity" finding. LinePower is DiffuseFromSeeds' own
+			// perpendicular cross-section decay exponent (NextChange = Pow(CurChange, LinePower) per
+			// hop AWAY from the seed line) - unchanged at 0.85 since before this session's curvature
+			// work began, when the seed path itself was a single straight/hop-by-hop line with no
+			// bend. Raised toward hill-like breadth (0.90) so the now-continuous, now-curved seed
+			// chain carves a genuinely WIDE reach into the island interior instead of a thin
+			// single-cell-wide line - "halfway between crater clusters and narrow trenches" per the
+			// user's own framing: keeps IH-DEC-082's connected/curved PATH shape, widens the
+			// CROSS-SECTION carved along it. Self-test-calibrated, not guessed - watch for severing
+			// (this function's own documented failure mode) given more area gets carved per trough.
+			// Size-relative via PrimaryTroughLinePower (see TroughWidthSizeScale above) - a flat 0.90
+			// over-carved small islands (self-test-caught: one GIZMO7 island's landFraction dropped
+			// to 0.038 before this fix).
 			FIHTerrainCellDiffusion::DiffuseAlongCells(
-				Graph, ChosenSeedIndices, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0, /*LinePower=*/0.85, Stream);
+				Graph, ChosenSeedIndices, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0, PrimaryTroughLinePower, Stream);
 			AllCarvedPathsThisIsland.Add(ChosenPositions);
 			PrimaryTroughPaths.Add(MoveTemp(ChosenPositions));
 		}
@@ -3461,8 +3491,12 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 
 		if (ChosenSeedIndices.Num() >= 2)
 		{
+			// 2026-09-04 (round 7): same LinePower-widening rationale as the primary-trough call
+			// above - gentler ceiling (0.83, vs 0.75 floor) since sub-inlets are already the
+			// shorter, ~33%-diagonal-targeted layer and shouldn't read as wide as primary troughs.
+			// Also size-relative via SubInletTroughLinePower, same reasoning as PrimaryTroughLinePower.
 			FIHTerrainCellDiffusion::DiffuseAlongCells(
-				Graph, ChosenSeedIndices, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0, /*LinePower=*/0.78, Stream);
+				Graph, ChosenSeedIndices, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0, SubInletTroughLinePower, Stream);
 			AllCarvedPathsThisIsland.Add(MoveTemp(ChosenPositions));
 		}
 	}
