@@ -3008,22 +3008,48 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// even where a trough does cross it - the land-fraction gap itself (Addendum 1, still open)
 	// is deliberately left alone this round to avoid another unstable swing like the multi-hill
 	// attempt that overshot to landFraction=0.977.
-	auto PickRandomCellInFracWindow = [&Graph](const FVector2D& XFrac, const FVector2D& YFrac, FRandomStream& RandStream) -> int32
+	// 2026-09-04 (IH-DEC pending): both windows below are centered on the graph's own AABB center
+	// (0.32-0.68 and 0.10-0.90 both straddle 0.5), so the window itself is always symmetric about
+	// GraphCenter regardless of RotationRad - rotating each CANDIDATE site by -RotationRad about
+	// GraphCenter before the axis-aligned bounds test is exactly equivalent to testing against the
+	// window rotated by +RotationRad in world space, with no change to the window's shape/bias
+	// (still narrow-center-to-wide-edge, still avoids corner-to-corner cuts through thin land - see
+	// the 2999-3010 comment above). RotationRad defaults to 0.0 (unchanged behavior) for every OTHER
+	// caller of this lambda; only the primary-trough loop below passes a nonzero, per-trough random
+	// value. Root cause this fixes: investigated fresh this session (user asked whether the
+	// consistent cross-island trough angle traced to the golden-ratio scalene triangle - it does
+	// NOT; the triangle gets its own independent per-island rotation and shares nothing but a
+	// sequential FRandomStream with these windows). The real cause is that this window pair was
+	// ALWAYS sampled in the graph's fixed local X/Y axes, never rotated - for two points drawn
+	// independently from same-center axis-aligned squares, the difference-vector's angular density
+	// is provably denser near the axis directions than the diagonals (a square domain isn't
+	// azimuthally uniform the way a disk is), and since the frame never varied, that bias repeated
+	// identically across every seed/island - exactly the "same angle every time" the user observed.
+	auto PickRandomCellInFracWindow = [&Graph](const FVector2D& XFrac, const FVector2D& YFrac, FRandomStream& RandStream, double RotationRad = 0.0) -> int32
 	{
 		if (Graph.Num() == 0)
 		{
 			return INDEX_NONE;
 		}
 		const FVector2D BoundsSize = Graph.BoundsMaxLocalCm - Graph.BoundsMinLocalCm;
+		const FVector2D GraphCenter = Graph.BoundsMinLocalCm + BoundsSize * 0.5;
 		const FVector2D WindowMin = Graph.BoundsMinLocalCm + FVector2D(BoundsSize.X * XFrac.X, BoundsSize.Y * YFrac.X);
 		const FVector2D WindowMax = Graph.BoundsMinLocalCm + FVector2D(BoundsSize.X * XFrac.Y, BoundsSize.Y * YFrac.Y);
+		const double CosNegR = FMath::Cos(-RotationRad);
+		const double SinNegR = FMath::Sin(-RotationRad);
 		int32 BestIdx = INDEX_NONE;
 		double BestDistSqCm = TNumericLimits<double>::Max();
 		constexpr int32 MaxTries = 60;
 		for (int32 Try = 0; Try < MaxTries; ++Try)
 		{
 			const int32 Idx = RandStream.RandRange(0, Graph.Num() - 1);
-			const FVector2D& P = Graph.Cells[Idx].SitePos;
+			const FVector2D& RawP = Graph.Cells[Idx].SitePos;
+			FVector2D P = RawP;
+			if (RotationRad != 0.0)
+			{
+				const FVector2D Local = RawP - GraphCenter;
+				P = GraphCenter + FVector2D(Local.X * CosNegR - Local.Y * SinNegR, Local.X * SinNegR + Local.Y * CosNegR);
+			}
 			if (P.X >= WindowMin.X && P.X <= WindowMax.X && P.Y >= WindowMin.Y && P.Y <= WindowMax.Y)
 			{
 				return Idx;
@@ -3055,8 +3081,13 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	TArray<TArray<FVector2D>> PrimaryTroughPaths;
 	for (int32 i = 0; i < NumPrimaryTroughs; ++i)
 	{
-		const int32 StartIdx = PickRandomCellInFracWindow(FVector2D(0.32, 0.68), FVector2D(0.32, 0.68), Stream);
-		const int32 EndIdx = PickRandomCellInFracWindow(FVector2D(0.10, 0.90), FVector2D(0.10, 0.90), Stream);
+		// 2026-09-04: fresh per-trough angle (not reused from the triangle's own rotation, so
+		// multiple troughs on one island don't also all align with each other) - see the
+		// PickRandomCellInFracWindow comment above for why this fixes the cross-island fixed-angle
+		// pattern the user flagged.
+		const double TroughRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
+		const int32 StartIdx = PickRandomCellInFracWindow(FVector2D(0.32, 0.68), FVector2D(0.32, 0.68), Stream, TroughRotationRad);
+		const int32 EndIdx = PickRandomCellInFracWindow(FVector2D(0.10, 0.90), FVector2D(0.10, 0.90), Stream, TroughRotationRad);
 		if (StartIdx == INDEX_NONE || EndIdx == INDEX_NONE || StartIdx == EndIdx)
 		{
 			continue;
@@ -3070,10 +3101,15 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		// primitive, player-placed), not procedural generation's — see
 		// IH_Handoff_TerrainStampsPivot_2026-09-01.md. FindPathOnly/DiffuseAlongCells/PickCellNearPath
 		// are left in IHTerrainCellDiffusion for Terrain Stamps or a future revisit, just unused here.
+		// 2026-09-04: PathRandomness 0.35->0.55 - the greedy walk's directional dot-product term is
+		// still dominant (both terms max out near 1.0), so this keeps troughs reaching their target
+		// rather than wandering erratically, while giving noticeably more wobble than the
+		// near-ruler-straight cuts the user flagged ("don't even look like glacier-carved fjords").
+		// Self-test-calibrated, not a blind guess - see this session's IH-DEC entry.
 		TArray<FVector2D> Path;
 		FIHTerrainCellDiffusion::AddRangeBetweenCells(
 			Graph, StartIdx, EndIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
-			/*LinePower=*/0.85, /*PathRandomness=*/0.35, Stream, &Path);
+			/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &Path);
 		if (Path.Num() >= 2)
 		{
 			PrimaryTroughPaths.Add(MoveTemp(Path));

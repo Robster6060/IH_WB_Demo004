@@ -676,6 +676,28 @@ namespace IHTerrainCellDiffusionPrivate
 		// site pair whose clipped Voronoi cells share no boundary point) is NOT fixed here - it needs
 		// its own investigation with real self-test data, not a blind change to triangulation/clipping
 		// code with no live verification.
+		//
+		// RESOLVED (2026-09-04, IH-DEC-073): the non-adjacent-Neighbors question above is answered.
+		// Temporary diagnostic instrumentation (still present below, IH_DIAG-tagged - kept live for now
+		// since the ambiguous 1.4-4x zone noted below is still unresolved; remove once that's settled)
+		// dumped real failures' site positions on a live ALERT4 self-test: failing pairs were 5-88x the
+		// graph's own approximate
+		// cell spacing apart (not tens of thousands of cm in isolation - that WAS the anomaly), with
+		// clusters sharing a near-constant coordinate on one axis - classic Delaunay-triangulation
+		// degeneracy on near-collinear site clusters, not a clip-boundary/tolerance issue (explains why
+		// the widened-tolerance attempt above had zero effect - tolerance can't fix a topologically
+		// wrong edge). Fixed upstream in IHTerrainCellGraphGenerator.cpp: after building Cell.Neighbors
+		// from the Delaunay triangulation, entries whose two sites are farther apart than 4x the
+		// approximate cell spacing are pruned before this function (or anything else) ever sees them -
+		// this function's own Segments/loop-chaining logic was NOT touched, per its documented history.
+		// A genuinely ambiguous 1.4-4x ratio zone was left unpruned, not resolved blind - some residual
+		// real failures may remain; check FailedSharedEdgeCount on a fresh self-test before assuming
+		// zero. A separate, still-open main-loop-SELECTION bug (a "wrong ring" picked despite correct
+		// geometry, e.g. a shelf trace choosing a 10-vertex fragment over the real ring) was found
+		// during this same investigation and is NOT what this fix addresses - see IH-DEC-073's "island 3
+		// regressed" note. Future attempts on that should start from ring-selection logic (MainLoopIdx /
+		// largest-by-area picking), not this Neighbors-pruning approach, which was scoped narrowly and
+		// worked well for exactly the class of bug it targeted.
 		constexpr double SharedVertexToleranceCmSq = 1.0; // 1 cm^2 -> ~1 cm positional tolerance
 
 		auto FindSharedEdge = [SharedVertexToleranceCmSq](
@@ -723,6 +745,29 @@ namespace IHTerrainCellDiffusionPrivate
 		int32 FailedSharedEdgeCount = 0;
 		int32 PinchPointSkipCount = 0; // genuine single-point Voronoi pinches - expected, not a failure
 		int32 CrossBoundaryPairCount = 0;
+
+		// TEMPORARY diagnostic instrumentation (2026-09-04, IH-DEC pending "Fix 4"): dumps real
+		// FindSharedEdge failures' site positions, distance-to-BoundsMin/Max (tests the clip-
+		// boundary-truncation hypothesis), and inter-site distance vs. an approximate local cell
+		// spacing (tests the Delaunay-hull-long-edge hypothesis) - per IH-DEC-063's own standing
+		// open question ("why are non-adjacent cells in each other's Neighbors list at all?"),
+		// answered here with real data instead of another blind fix attempt, given this function's
+        // documented history of confident-seeming rewrites regressing a different predicate
+		// elsewhere. Capped per-call so a 100+-failure island doesn't flood the log. Remove once
+		// Fix 4's targeted fix has landed and been self-tested against both required predicates.
+		constexpr int32 MaxDiagnosticDumpsPerCall = 12;
+		int32 DiagnosticDumpCount = 0;
+		const FVector2D BoundsSize = Graph.BoundsMaxLocalCm - Graph.BoundsMinLocalCm;
+		const double ApproxCellSpacingCm = Graph.Num() > 0
+			? FMath::Sqrt((BoundsSize.X * BoundsSize.Y) / static_cast<double>(Graph.Num()))
+			: 0.0;
+		auto DistanceToBoundsEdgeCm = [&Graph](const FVector2D& P) -> double
+		{
+			return FMath::Min(
+				FMath::Min(P.X - Graph.BoundsMinLocalCm.X, Graph.BoundsMaxLocalCm.X - P.X),
+				FMath::Min(P.Y - Graph.BoundsMinLocalCm.Y, Graph.BoundsMaxLocalCm.Y - P.Y));
+		};
+
 		for (int32 CellIdx = 0; CellIdx < Graph.Num(); ++CellIdx)
 		{
 			const FIHTerrainCell& Cell = Graph.Cells[CellIdx];
@@ -756,6 +801,19 @@ namespace IHTerrainCellDiffusionPrivate
 				else
 				{
 					++FailedSharedEdgeCount;
+					if (DiagnosticDumpCount < MaxDiagnosticDumpsPerCall)
+					{
+						++DiagnosticDumpCount;
+						const double InterSiteDistCm = FVector2D::Distance(Cell.SitePos, Neighbor.SitePos);
+						const double CellEdgeDistCm = DistanceToBoundsEdgeCm(Cell.SitePos);
+						const double NeighborEdgeDistCm = DistanceToBoundsEdgeCm(Neighbor.SitePos);
+						UE_LOG(LogTemp, Warning,
+							TEXT("IH_DIAG FindSharedEdge cellA=%d siteA=(%.1f,%.1f) edgeDistA=%.1fcm cellB=%d siteB=(%.1f,%.1f) edgeDistB=%.1fcm interSiteDist=%.1fcm approxCellSpacing=%.1fcm ratio=%.2f"),
+							CellIdx, Cell.SitePos.X, Cell.SitePos.Y, CellEdgeDistCm,
+							NeighborIdx, Neighbor.SitePos.X, Neighbor.SitePos.Y, NeighborEdgeDistCm,
+							InterSiteDistCm, ApproxCellSpacingCm,
+							ApproxCellSpacingCm > 0.0 ? InterSiteDistCm / ApproxCellSpacingCm : -1.0);
+					}
 				}
 			}
 		}

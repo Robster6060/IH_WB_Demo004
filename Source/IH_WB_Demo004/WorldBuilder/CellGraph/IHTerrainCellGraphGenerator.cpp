@@ -292,9 +292,57 @@ bool FIHTerrainCellGraphGenerator::BuildGraph(const FBuildParams& Params, FIHTer
 			}
 		}
 	}
+
+	// 2026-09-04 (IH-DEC pending "Fix 4"): drop degenerate long-range "neighbor" edges before they
+	// ever reach TraceBoundaryLoops/FindSharedEdge or the water-component BFS. Root-caused this
+	// session via temporary diagnostic instrumentation in TraceBoundaryLoops (real failing pairs'
+	// site positions dumped, not guessed): real FindSharedEdge failures on a live ALERT4 self-test
+	// showed inter-site distances 5-88x the graph's own average cell spacing, with pathologically
+	// bunched pairs sharing a near-constant coordinate on one axis - classic Delaunay-triangulation
+	// degeneracy on near-collinear site clusters, not a clip-boundary/tolerance issue (the two
+	// widened-tolerance attempts already tried and reverted for IH-DEC-063 had zero effect for
+	// exactly this reason - tolerance can't fix a topologically wrong edge). A genuine Voronoi
+	// neighbor pair in this roughly-uniform jittered grid is never more than ~2x the average
+	// spacing apart (adjacent, or diagonal-adjacent); only clearly-anomalous long edges are culled
+	// here - the threshold is deliberately conservative (ratios up to ~4x left untouched) since the
+	// real data showed a genuinely ambiguous zone in the 1.4-4x range this pass doesn't try to
+	// resolve blind. This only prunes Cell.Neighbors itself, upstream of every consumer
+	// (TraceBoundaryLoops, the water-component BFS, and trough/hill pathfinding) - it never touches
+	// FindSharedEdge/FindConnectingSegment's own loop-chaining logic, the part of this pipeline
+	// with the documented history of regressions (see IHTerrainCellDiffusion.cpp's "Do No Harm"
+	// comment). Self-tested against both coastline-loop health and wwfAcres/shelf-ring health
+	// before shipping, per that same lesson.
+	const FVector2D FilterBoundsSize = BoundsMax - BoundsMin;
+	const double ApproxCellSpacingCm = Sites.Num() > 0
+		? FMath::Sqrt((FilterBoundsSize.X * FilterBoundsSize.Y) / static_cast<double>(Sites.Num()))
+		: 0.0;
+	constexpr double MaxNeighborDistRatio = 4.0;
+	const double MaxNeighborDistCm = ApproxCellSpacingCm * MaxNeighborDistRatio;
+	const double MaxNeighborDistSqCm = MaxNeighborDistCm * MaxNeighborDistCm;
+	int32 PrunedLongEdgeCount = 0;
 	for (int32 i = 0; i < Sites.Num(); ++i)
 	{
-		OutGraph.Cells[i].Neighbors = NeighborSets[i].Array();
+		TArray<int32> Filtered;
+		Filtered.Reserve(NeighborSets[i].Num());
+		for (const int32 NeighborIdx : NeighborSets[i])
+		{
+			if (MaxNeighborDistCm <= 0.0 || FVector2D::DistSquared(Sites[i], Sites[NeighborIdx]) <= MaxNeighborDistSqCm)
+			{
+				Filtered.Add(NeighborIdx);
+			}
+			else
+			{
+				++PrunedLongEdgeCount;
+			}
+		}
+		OutGraph.Cells[i].Neighbors = MoveTemp(Filtered);
+	}
+	if (PrunedLongEdgeCount > 0)
+	{
+		// Each bad edge is stored on both endpoints, so divide by 2 for the real edge count.
+		UE_LOG(LogTemp, Log,
+			TEXT("IHTerrainCellGraphGenerator: pruned %d degenerate long-range Neighbors edge(s) (>%.0fcm, %.1fx approxCellSpacing=%.1fcm) island=%d"),
+			PrunedLongEdgeCount / 2, MaxNeighborDistCm, MaxNeighborDistRatio, ApproxCellSpacingCm, Params.IslandIndex);
 	}
 
 	OutGraph.BoundsMinLocalCm = BoundsMin;
