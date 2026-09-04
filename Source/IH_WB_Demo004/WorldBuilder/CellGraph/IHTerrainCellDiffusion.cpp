@@ -388,6 +388,26 @@ bool FIHTerrainCellDiffusion::FindPathOnly(
 	return true;
 }
 
+bool FIHTerrainCellDiffusion::FindPathIndicesOnly(
+	const FIHTerrainCellGraph& Graph, const int32 StartIdx, const int32 EndIdx,
+	const double PathRandomness, FRandomStream& Stream, TArray<int32>& OutPathIndices)
+{
+	using namespace IHTerrainCellDiffusionPrivate;
+
+	OutPathIndices.Reset();
+	if (!Graph.IsValidIndex(StartIdx) || !Graph.IsValidIndex(EndIdx) || StartIdx == EndIdx)
+	{
+		return false;
+	}
+
+	if (!FindPathBetweenCells(Graph, StartIdx, EndIdx, PathRandomness, Stream, OutPathIndices) || OutPathIndices.Num() < 2)
+	{
+		return false;
+	}
+
+	return true;
+}
+
 void FIHTerrainCellDiffusion::DiffuseAlongCells(
 	FIHTerrainCellGraph& Graph, const TArray<int32>& SeedIndices, const double HeightMin,
 	const double HeightMax, const double LinePower, FRandomStream& Stream,

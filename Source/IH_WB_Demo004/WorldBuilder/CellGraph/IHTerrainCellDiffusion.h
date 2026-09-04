@@ -133,6 +133,25 @@ public:
 		TArray<FVector2D>& OutPathSitePositionsLocalCm);
 
 	/**
+	 * 2026-09-04: same pathfind as FindPathOnly, but returns the raw graph-adjacent cell INDEX
+	 * sequence instead of positions - every consecutive pair is a real Cell.Neighbors link, no
+	 * nearest-cell lookup needed to use it as a DiffuseAlongCells seed list. Added because chaining
+	 * independently-found PickCellNearPath waypoints (nearest-cell-to-a-point, not graph-adjacency-
+	 * aware) can leave real hop-gaps between consecutive seeds when a waypoint's offset target lands
+	 * a few hops from its neighbor's - DiffuseFromSeeds' per-seed BFS then pinches shallow between
+	 * them instead of carving one continuous valley, reading as a chain of small circular "craters"
+	 * rather than a trough (IH-DEC-082's diagnosis). Callers building a curved multi-anchor path
+	 * should connect each anchor pair with this, not re-derive positions and re-search for cells.
+	 */
+	static bool FindPathIndicesOnly(
+		const FIHTerrainCellGraph& Graph,
+		int32 StartIdx,
+		int32 EndIdx,
+		double PathRandomness,
+		FRandomStream& Stream,
+		TArray<int32>& OutPathIndices);
+
+	/**
 	 * IH-DEC-060: same primitive as AddRangeBetweenCells, but the seed cell sequence is
 	 * caller-supplied rather than pathfound internally - draws one height and diffuses once
 	 * across the whole list, exactly like AddRangeBetweenCells does for its own pathfound list.

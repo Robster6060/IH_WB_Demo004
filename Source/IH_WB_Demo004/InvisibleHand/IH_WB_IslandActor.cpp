@@ -3214,6 +3214,21 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// both historical severing regressions. AmplitudeFrac answers "bend radius" (how far the path
 	// bulges); Periods answers "sinusoidal, less linear" (how many bulges - 1.0 is IH-DEC-060's own
 	// proven single-S-curve baseline, self-test-calibrated up from there this round).
+	// 2026-09-04 (round 6, IH-DEC-082): round 5's fix (scaling waypoint COUNT) reduced the average
+	// gap between independently-picked waypoints but didn't guarantee any two consecutive ones were
+	// actually graph-adjacent - PickCellNearPath finds the nearest cell to an offset TARGET POINT,
+	// with no awareness of Cell.Neighbors connectivity, and its own per-call jitter
+	// (Stream.FRandRange(0.9,1.1) on the lateral offset) means even closely-spaced waypoints can pick
+	// cells several hops apart. DiffuseFromSeeds' multi-source BFS then pinches shallow in real gaps
+	// between disconnected seeds (each seed's own decay reaching only partway across), reading as a
+	// chain of small circular "craters" instead of one continuous trough - user-confirmed, common on
+	// almost every island. Real fix: guarantee hop-continuity, not just higher sample density. Pick a
+	// SMALL number of bend anchors along the reference path (the sine offset targets), then connect
+	// EVERY consecutive anchor pair with FindPathIndicesOnly - a real graph-adjacent hop-chain, not
+	// another independent nearest-point search - so the final seed list has zero connectivity gaps by
+	// construction. Cheaper than round 5's approach too: ~8 expensive NearestCellToPoint lookups
+	// (one per anchor) instead of up to 80, plus a handful of cheap graph-BFS connects bounded by
+	// hop-distance between anchors (not O(graph size) each).
 	auto BuildSineCurveCandidate = [&Graph](
 		int32 StartIdx, int32 EndIdx, double AmplitudeFrac, double Periods, double PathRandomness,
 		FRandomStream& RandStream, TArray<int32>& OutSeedIndices, TArray<FVector2D>& OutPositions) -> bool
@@ -3231,31 +3246,48 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		{
 			RefPathLenCm += FVector2D::Distance(RefPath[P - 1], RefPath[P]);
 		}
-		// 2026-09-04 (round 5): a fixed NumWaypoints=9 regardless of path length was the real cause
-		// of "no deep trenches... minimal egress" - user-confirmed self-inflicted regression. The
-		// OLD straight/elbow-hook carve used AddRangeBetweenCells, whose seed list was every cell
-		// along FindPathBetweenCells' own hop-by-hop output (RefPath here has that exact same
-		// density, ~1 point per hop - often 40-90+ points for a real primary trough) - AT ZERO extra
-		// cost, since those were already-known cell indices, no lookup needed. Sampling only 9
-		// waypoints from that same reference collapsed seed density by 5-10x, leaving large gaps
-		// DiffuseFromSeeds' own per-hop falloff couldn't bridge at full depth. Fix: scale waypoint
-        // count with the reference path's own point count, restoring dense/continuous carving - but
-        // NOT all the way to 1:1, since (unlike the old direct-index approach) each waypoint here costs
-        // a full PickCellNearPath -> NearestCellToPoint linear scan over the WHOLE graph (no spatial
-        // index exists) - on a 600k+-cell island, going all the way to RefPath.Num() (up to ~200+) risks
-        // a real generation-time regression on top of the density fix. Halving the path's own density
-        // and capping at 80 is a deliberate middle ground: self-test to confirm it closes the "no deep
-        // trenches" gap without materially slowing generation before considering a further increase.
-		const int32 NumWaypoints = FMath::Clamp(RefPath.Num() / 2, 20, 80);
-		for (int32 W = 0; W < NumWaypoints; ++W)
+
+		constexpr int32 NumAnchors = 8; // bend-offset targets, not a density sample count
+		TArray<int32> AnchorIndices;
+		AnchorIndices.Add(StartIdx);
+		for (int32 A = 1; A < NumAnchors - 1; ++A)
 		{
-			const double AlongFrac = static_cast<double>(W) / static_cast<double>(NumWaypoints - 1);
+			const double AlongFrac = static_cast<double>(A) / static_cast<double>(NumAnchors - 1);
 			const double LateralOffsetCm = AmplitudeFrac * RefPathLenCm * FMath::Sin(2.0 * PI * Periods * AlongFrac);
-			const int32 Idx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, RefPath, AlongFrac, LateralOffsetCm, RandStream);
-			if (Idx != INDEX_NONE && (OutSeedIndices.Num() == 0 || OutSeedIndices.Last() != Idx))
+			const int32 AnchorIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, RefPath, AlongFrac, LateralOffsetCm, RandStream);
+			if (AnchorIdx != INDEX_NONE && AnchorIdx != AnchorIndices.Last())
 			{
-				OutSeedIndices.Add(Idx);
-				OutPositions.Add(Graph.Cells[Idx].SitePos);
+				AnchorIndices.Add(AnchorIdx);
+			}
+		}
+		if (AnchorIndices.Last() != EndIdx)
+		{
+			AnchorIndices.Add(EndIdx);
+		}
+
+		OutSeedIndices.Add(StartIdx);
+		OutPositions.Add(Graph.Cells[StartIdx].SitePos);
+		for (int32 A = 1; A < AnchorIndices.Num(); ++A)
+		{
+			const int32 FromIdx = AnchorIndices[A - 1];
+			const int32 ToIdx = AnchorIndices[A];
+			if (FromIdx == ToIdx)
+			{
+				continue;
+			}
+			TArray<int32> SubChain;
+			if (!FIHTerrainCellDiffusion::FindPathIndicesOnly(Graph, FromIdx, ToIdx, PathRandomness, RandStream, SubChain)
+				|| SubChain.Num() < 2)
+			{
+				continue; // couldn't connect this anchor pair - skip it, keep the rest of the chain
+			}
+			for (int32 S = 1; S < SubChain.Num(); ++S) // S=1: SubChain[0]==FromIdx, already the last seed added
+			{
+				if (OutSeedIndices.Last() != SubChain[S])
+				{
+					OutSeedIndices.Add(SubChain[S]);
+					OutPositions.Add(Graph.Cells[SubChain[S]].SitePos);
+				}
 			}
 		}
 		return OutSeedIndices.Num() >= 2;
