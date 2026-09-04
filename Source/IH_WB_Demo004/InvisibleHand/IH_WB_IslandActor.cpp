@@ -3231,7 +3231,22 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		{
 			RefPathLenCm += FVector2D::Distance(RefPath[P - 1], RefPath[P]);
 		}
-		constexpr int32 NumWaypoints = 9;
+		// 2026-09-04 (round 5): a fixed NumWaypoints=9 regardless of path length was the real cause
+		// of "no deep trenches... minimal egress" - user-confirmed self-inflicted regression. The
+		// OLD straight/elbow-hook carve used AddRangeBetweenCells, whose seed list was every cell
+		// along FindPathBetweenCells' own hop-by-hop output (RefPath here has that exact same
+		// density, ~1 point per hop - often 40-90+ points for a real primary trough) - AT ZERO extra
+		// cost, since those were already-known cell indices, no lookup needed. Sampling only 9
+		// waypoints from that same reference collapsed seed density by 5-10x, leaving large gaps
+		// DiffuseFromSeeds' own per-hop falloff couldn't bridge at full depth. Fix: scale waypoint
+        // count with the reference path's own point count, restoring dense/continuous carving - but
+        // NOT all the way to 1:1, since (unlike the old direct-index approach) each waypoint here costs
+        // a full PickCellNearPath -> NearestCellToPoint linear scan over the WHOLE graph (no spatial
+        // index exists) - on a 600k+-cell island, going all the way to RefPath.Num() (up to ~200+) risks
+        // a real generation-time regression on top of the density fix. Halving the path's own density
+        // and capping at 80 is a deliberate middle ground: self-test to confirm it closes the "no deep
+        // trenches" gap without materially slowing generation before considering a further increase.
+		const int32 NumWaypoints = FMath::Clamp(RefPath.Num() / 2, 20, 80);
 		for (int32 W = 0; W < NumWaypoints; ++W)
 		{
 			const double AlongFrac = static_cast<double>(W) / static_cast<double>(NumWaypoints - 1);
