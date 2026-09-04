@@ -3143,6 +3143,9 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// radial-by-construction problem.
 	constexpr int32 NumPrimaryTroughs = 2;
 	TArray<TArray<FVector2D>> PrimaryTroughPaths;
+	// Hoisted (round 3): shared by the primary-trough length cap below AND the sub-inlet length
+	// targeting further down (Ask 2) - was previously recomputed per-primary-trough-iteration.
+	const double IslandDiagonalCm = (Graph.BoundsMaxLocalCm - Graph.BoundsMinLocalCm).Size();
 	for (int32 i = 0; i < NumPrimaryTroughs; ++i)
 	{
 		// 2026-09-04: fresh per-trough angle (not reused from the triangle's own rotation, so
@@ -3199,7 +3202,6 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		// (coastline/loop generation stayed healthy throughout), just a lower-than-historical-target
 		// dry-land fraction worth a future dedicated look if it reads as thin in PIE.
 		constexpr double MaxTroughLengthFracOfDiagonal = 0.65;
-		const double IslandDiagonalCm = (Graph.BoundsMaxLocalCm - Graph.BoundsMinLocalCm).Size();
 		const double MaxTroughLengthCm = IslandDiagonalCm * MaxTroughLengthFracOfDiagonal;
 		const double StraightDistCm = FVector2D::Distance(Graph.Cells[StartIdx].SitePos, Graph.Cells[EndIdx].SitePos);
 
@@ -3227,7 +3229,20 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 						Graph, StartIdx, HookIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
 						/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &Path);
 
-					const double CapFrac2 = FMath::Min(CapFrac1 + Stream.FRandRange(0.10, 0.25), 0.95);
+					// 2026-09-04 (round 3, Ask 1): leg 2's target was previously parameterized as a
+					// FRACTION OF THE ORIGINAL FULL PATH (CapFrac1 + up to 0.25 more, capped at 0.95) -
+					// since that original path is often close to the island's full extent, leg 2 could
+					// add another 10-25 percentage points of a LONG reference length, so the bend
+					// redirected the trough partway through but the TOTAL distance traveled still ended
+					// up close to the original near-full length (self-test-confirmed root cause of why
+					// raising the cap 0.45->0.65 had zero effect - IH-DEC-077). Fixed: leg 2's target
+					// length is now proportional to MaxTroughLengthCm (the SHORT 65%-of-diagonal
+					// reference), not TotalPathLenCm - keeps the combined bent trough close to
+					// MaxTroughLengthCm * ~1.1-1.3 instead of drifting back toward the unbent length.
+					const double Leg2TargetLenCm = Stream.FRandRange(0.10, 0.20) * MaxTroughLengthCm;
+					const double CapFrac2 = TotalPathLenCm > 0.0
+						? FMath::Min(CapFrac1 + Leg2TargetLenCm / TotalPathLenCm, 0.95)
+						: CapFrac1;
 					const double LateralOffset2Cm = LateralOffset1Cm
 						+ (Stream.FRand() < 0.5 ? -1.0 : 1.0) * Stream.FRandRange(600.0, 2200.0);
 					const int32 EndPrimeIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, FullPath, CapFrac2, LateralOffset2Cm, Stream);
@@ -3275,11 +3290,51 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// cross-island angle bias diagnosed and fixed for primary troughs above, just never propagated
 	// to this second carving layer. Fresh per-call rotation, independent of the primary troughs' own
 	// rotations, so sub-inlets don't correlate with them either.
-	const double SubInletRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
-	FIHTerrainCellDiffusion::AddRange(
-		Graph, /*Count=*/2, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
-		FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), /*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream,
-		/*OutPathsSitePositionsLocalCm=*/nullptr, SubInletRotationRad);
+	//
+	// 2026-09-04 (round 3, Ask 2): AddRange's plain Start/End picking (both drawn independently
+	// within the same window, no distance targeting) gave sub-inlets an uncontrolled, arbitrary
+	// length. Per the user's own request for ~33%-of-diagonal "side troughs," replaced the AddRange
+	// call with a local Count=2 loop that reuses PickRandomCellInFracWindow (already in scope, same
+	// lambda primary troughs use above) for Start, then draws up to MaxLengthTries End candidates
+	// (fresh rotation each try) and keeps whichever lands closest to a per-inlet target length - the
+	// same "retry-and-keep-best" idiom PickRandomCellInFracWindow itself already uses internally, not
+	// a new geometric search. Carves via AddRangeBetweenCells with AddRange's own former parameters.
+	constexpr int32 NumSubInlets = 2;
+	constexpr int32 MaxSubInletLengthTries = 12;
+	for (int32 SubInletIdx = 0; SubInletIdx < NumSubInlets; ++SubInletIdx)
+	{
+		const double SubInletStartRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
+		const int32 SubInletStartIdx = PickRandomCellInFracWindow(FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), Stream, SubInletStartRotationRad);
+		if (SubInletStartIdx == INDEX_NONE)
+		{
+			continue;
+		}
+		const double TargetSubInletLenCm = Stream.FRandRange(0.28, 0.38) * IslandDiagonalCm;
+		int32 BestEndIdx = INDEX_NONE;
+		double BestLenDeltaCm = TNumericLimits<double>::Max();
+		for (int32 Try = 0; Try < MaxSubInletLengthTries; ++Try)
+		{
+			const double CandidateRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
+			const int32 CandidateEndIdx = PickRandomCellInFracWindow(FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), Stream, CandidateRotationRad);
+			if (CandidateEndIdx == INDEX_NONE || CandidateEndIdx == SubInletStartIdx)
+			{
+				continue;
+			}
+			const double CandidateLenCm = FVector2D::Distance(Graph.Cells[SubInletStartIdx].SitePos, Graph.Cells[CandidateEndIdx].SitePos);
+			const double LenDeltaCm = FMath::Abs(CandidateLenCm - TargetSubInletLenCm);
+			if (LenDeltaCm < BestLenDeltaCm)
+			{
+				BestLenDeltaCm = LenDeltaCm;
+				BestEndIdx = CandidateEndIdx;
+			}
+		}
+		if (BestEndIdx != INDEX_NONE)
+		{
+			FIHTerrainCellDiffusion::AddRangeBetweenCells(
+				Graph, SubInletStartIdx, BestEndIdx, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
+				/*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream);
+		}
+	}
 
 	// Cove-scale daughter troughs biased toward a primary trough's path - the compound
 	// nested-inlet extension verified this session (TerrainCellGraph.NestedInletShape:
@@ -3669,7 +3724,56 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 				}
 				return false;
 			};
+			// 2026-09-04 (round 3, Ask 3): a fully-enclosed (non-box-edge-touching, i.e. "entirely
+			// inland" per the user's own phrasing - box-edge-touching already means "connects to open
+			// water beyond this island," reusing that existing signal rather than inventing a new
+			// "ocean connected" test) water component can still be an elongated TROUGH shape rather
+			// than a rounded lake - e.g. a primary/side trough carve that never reached open water.
+			// That reads as an unnatural linear "inland sea," not a lake. Orientation-independent
+			// elongation test (troughs are randomly rotated per-island this session - a naive
+			// axis-aligned bounding-box ratio would under-detect a diagonally-oriented trough, whose
+			// axis-aligned bbox can look nearly square despite being visually long and thin): compute
+			// the component's SitePos centroid and 2x2 covariance matrix, solve its eigenvalues in
+			// closed form, and take the ratio of principal-axis standard deviations - a true elongation
+			// measure regardless of rotation. Only affects components that would otherwise be KEPT as
+			// inland-sea candidates (>=MinLakeCellCount, not box-edge-touching); elongated ones are
+			// filled to Land instead (same mechanism as the small-pond fill below, gated on shape
+			// rather than size). Rounder components (real lakes) are unaffected.
+			constexpr double ElongationRatioThreshold = 2.5; // self-test-calibrated starting point
+			auto ComponentElongationRatio = [&Graph](const TArray<int32>& Component) -> double
+			{
+				if (Component.Num() < 3)
+				{
+					return 1.0; // too few cells for a meaningful shape measure - treat as round/keep
+				}
+				FVector2D Centroid(0.0, 0.0);
+				for (const int32 CellIdx : Component)
+				{
+					Centroid += Graph.Cells[CellIdx].SitePos;
+				}
+				Centroid /= static_cast<double>(Component.Num());
+
+				double Cxx = 0.0, Cyy = 0.0, Cxy = 0.0;
+				for (const int32 CellIdx : Component)
+				{
+					const FVector2D D = Graph.Cells[CellIdx].SitePos - Centroid;
+					Cxx += D.X * D.X;
+					Cyy += D.Y * D.Y;
+					Cxy += D.X * D.Y;
+				}
+				const double N = static_cast<double>(Component.Num());
+				Cxx /= N; Cyy /= N; Cxy /= N;
+
+				const double Mid = (Cxx + Cyy) * 0.5;
+				const double Rad = FMath::Sqrt(FMath::Max(0.0, FMath::Square((Cxx - Cyy) * 0.5) + Cxy * Cxy));
+				const double LambdaMax = Mid + Rad;
+				const double LambdaMin = FMath::Max(1.0, Mid - Rad); // guard against near-zero/degenerate minor axis
+				return FMath::Sqrt(LambdaMax / LambdaMin);
+			};
+
 			int32 BoxEdgeExcludedComponentCount = 0;
+			int32 ElongatedTroughFilledCount = 0;
+			int64 ElongatedTroughFilledCells = 0;
 
 			for (int32 i = 0; i < WaterComponents.Num(); ++i)
 			{
@@ -3684,7 +3788,17 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 						++BoxEdgeExcludedComponentCount;
 						continue; // not filled to land (may be real, large water) - just excluded as an inland-sea ring candidate
 					}
-					// Kept as a genuine inland sea - record for the ring-classification pass below.
+					if (ComponentElongationRatio(WaterComponents[i]) > ElongationRatioThreshold)
+					{
+						for (const int32 CellIdx : WaterComponents[i])
+						{
+							Graph.Cells[CellIdx].Feature = EIHCellFeature::Land;
+						}
+						++ElongatedTroughFilledCount;
+						ElongatedTroughFilledCells += WaterComponents[i].Num();
+						continue;
+					}
+					// Kept as a genuine (rounded) inland sea - record for the ring-classification pass below.
 					KeptWaterComponentCellCounts.Add(WaterComponents[i].Num());
 					continue;
 				}
@@ -3707,6 +3821,12 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 				UE_LOG(LogTemp, Log,
 					TEXT("IH_WB_IslandActor: island=%d excluded %d water component(s) from inland-sea classification (touches this island's own box edge - not a real enclosure)"),
 					TankIslandIndex, BoxEdgeExcludedComponentCount);
+			}
+			if (ElongatedTroughFilledCount > 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("IH_WB_IslandActor: island=%d filled %d elongated trough-shaped water component(s) (%lld cells, elongationRatio>%.1f) - not a rounded inland sea"),
+					TankIslandIndex, ElongatedTroughFilledCount, ElongatedTroughFilledCells, ElongationRatioThreshold);
 			}
 		}
 	}
