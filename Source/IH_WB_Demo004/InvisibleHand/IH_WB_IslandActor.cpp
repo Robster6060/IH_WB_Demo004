@@ -2836,14 +2836,78 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// threshold - over 3.4x this island's own HopRadius. Every hill floods nearly the whole graph
 	// before it can decay, regardless of hill COUNT - a prior, already-documented incident hit the
 	// identical symptom from a different trigger ("26 overlapping hills... landFraction=0.977, a
-	// nearly-solid box," comment above). Lowered ceiling to 0.98/0.978 - a starting, self-test-
-	// driven value (~210 hops to decay at HopRadius=392, about half the graph's own radius), not a
-	// final derivation. Confirmed safe for the already-validated small-scale/reference behavior:
-	// the raw (unclamped) formula's own value at HopRadius=ReferenceHopRadius is ~0.90, well below
-	// even this lowered ceiling, so it never binds there - this only constrains the large-HopRadius
-	// regime where the old ceiling was letting hills exceed the graph's own extent.
-	const double MainBlobPower = FMath::Clamp(FMath::Pow(0.90, ReferenceHopRadius / HopRadius), 0.80, 0.98);
-	const double AccentBlobPower = FMath::Clamp(FMath::Pow(0.88, ReferenceHopRadius / HopRadius), 0.80, 0.978);
+	// nearly-solid box," comment above).
+	//
+	// 2026-09-04 (Track C, small-island root cause): the 0.98/0.978 ceiling above (self-test-driven,
+	// not derived) fixed the ORIGINAL large-island case but created the SAME failure at the small
+	// end for a different reason - IH_DIAG SmallIslandCheck data (GIZMO7, 7 islands) showed
+	// mainHillDecayHopsOverHopRadius climbing 0.52 -> 1.76 from largest to smallest island while
+	// MainBlobPower stayed pinned at the flat 0.98 ceiling for most of that range (it only started
+	// dropping below HopRadius~101, and even then far too gently to compensate - island6's ratio was
+	// STILL worse than island5's despite BlobPower correctly decreasing). Root cause: hill/trough
+	// SEED HEIGHTS were left as flat constants (not re-derived per island size the way BlobPower
+	// itself was supposed to be), and decay hop count depends only LOGARITHMICALLY on seed height
+	// (DiffuseFromSeeds's NextChange = Pow(CurChange, PowerExp) means hop count solves
+	// SeedHeight^(PowerExp^n) = NearThreshold, i.e. n = ln(K)/ln(PowerExp) for
+	// K = ln(NearThreshold)/ln(SeedHeight)) - so PowerExp, not SeedHeight, is the only lever with
+	// enough leverage to hit a target ratio. Replaced the old heuristic clamp with the ANALYTICAL
+	// solution for PowerExp that keeps mainHillDecayHops/HopRadius at a constant TargetDecayRatio
+	// (0.5, matching island0's own already-PIE-praised "excellent... organic natural island look" -
+	// this is a re-derivation, not a re-tuning, of the exact same behavior at the large end, while
+	// scaling correctly all the way down instead of plateauing at a flat ceiling). NearThreshold
+	// (1/0.9) is the same jitter-reach proxy validated against this session's own "~210 hops at
+	// HopRadius=392" reference point (this formula gives ~188 there - same order of magnitude).
+	// AccentBlobPower gets its own K from its own (smaller) seed height ceiling, same derivation.
+	constexpr double TargetDecayRatio = 0.5;
+	constexpr double DecayNearThreshold = 1.0 / 0.9;
+	constexpr double MainSeedHeightForCalibration = 70.0; // largest MainBlobPower-driven seed height (primary + main-accent hills)
+	constexpr double AccentSeedHeightForCalibration = 28.0; // largest AccentBlobPower-driven seed height
+	const double LnDecayNearThreshold = FMath::Loge(DecayNearThreshold);
+	const double LnMainK = FMath::Loge(LnDecayNearThreshold / FMath::Loge(MainSeedHeightForCalibration));
+	const double LnAccentK = FMath::Loge(LnDecayNearThreshold / FMath::Loge(AccentSeedHeightForCalibration));
+	const double MainBlobPower = FMath::Clamp(FMath::Exp(LnMainK / (TargetDecayRatio * HopRadius)), 0.80, 0.98);
+	const double AccentBlobPower = FMath::Clamp(FMath::Exp(LnAccentK / (TargetDecayRatio * HopRadius)), 0.80, 0.978);
+
+	// TEMPORARY diagnostic instrumentation (2026-09-04, IH-DEC pending "Track C"): the user asked
+	// whether some island-generation parameter calibrated for large islands is carried forward
+	// unchanged to small ones, "overwhelming" them. IH-DEC-070 made BlobPower (decay RATE) size-
+	// relative via HopRadius above, but hill/trough SEED HEIGHTS (e.g. main hill 50-70, immediately
+	// below) and LandThreshold=20.0 (further below) are still flat constants, never re-derived per
+	// island size. Simulates DiffuseFromSeeds's own exact per-hop formula (IHTerrainCellDiffusion.cpp:
+	// NextChange = Pow(Abs(CurChange), PowerExp), ignoring jitter for a deterministic estimate) for a
+	// representative main-hill seed height, without touching that shared function at all, to test
+	// this hypothesis with real per-island numbers before implementing any fix.
+	{
+		// Iterating x -> Pow(x, PowerExp) for 0<PowerExp<1, x>1 converges to exactly 1.0 only in the
+		// limit - it mathematically never crosses a strict ">1.0" test in finite steps (confirmed by
+		// a first attempt here hitting a 100,000-iteration cap with room to spare). The REAL
+		// DiffuseFromSeeds only terminates because of its per-hop Jitter (0.9-1.1 range) occasionally
+		// pushing a near-1 value below the threshold - approximate that without touching the shared
+		// function or its RNG stream by stopping once Change is within the jitter's own downward
+		// reach (<=1.0/0.9 = 1.111, the point where a single min-jitter draw could cross 1.0).
+		// Cross-checked: at HopRadius=392/MainBlobPower=0.98 (this session's own documented "~210
+		// hops to decay" reference point), this proxy gives ~188 hops - same order of magnitude,
+		// good enough for a relative small-vs-large-island comparison, not claimed as exact.
+		auto SimulateDecayHops = [](double SeedHeight, double PowerExp) -> int32
+		{
+			double Change = SeedHeight;
+			int32 Hops = 0;
+			constexpr double NearThreshold = 1.0 / 0.9;
+			constexpr int32 MaxSimHops = 100000; // guaranteed termination regardless of PowerExp
+			while (FMath::Abs(Change) > NearThreshold && Hops < MaxSimHops)
+			{
+				Change = FMath::Pow(FMath::Abs(Change), PowerExp);
+				++Hops;
+			}
+			return Hops;
+		};
+		const int32 MainHillDecayHops = SimulateDecayHops(/*SeedHeight=*/70.0, MainBlobPower);
+		const int32 AccentHillDecayHops = SimulateDecayHops(/*SeedHeight=*/28.0, AccentBlobPower);
+		UE_LOG(LogTemp, Log,
+			TEXT("IH_DIAG SmallIslandCheck island=%d cells=%d HopRadius=%.1f MainBlobPower=%.4f AccentBlobPower=%.4f mainHillDecayHops=%d mainHillDecayHopsOverHopRadius=%.2f accentHillDecayHops=%d accentHillDecayHopsOverHopRadius=%.2f"),
+			TankIslandIndex, Graph.Num(), HopRadius, MainBlobPower, AccentBlobPower,
+			MainHillDecayHops, MainHillDecayHops / HopRadius, AccentHillDecayHops, AccentHillDecayHops / HopRadius);
+	}
 
 	// Plan Addendum 5: golden-ratio scalene seed triangle, replacing the point-seeded circular
 	// base shape. Side LENGTHS in ratio 1:phi:phi^2 are degenerate (1 + phi == phi^2 exactly, the
@@ -3093,23 +3157,97 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 			continue;
 		}
 
-		// Terrain Stamps pivot (2026-09-01): reverted to the straight AddRangeBetweenCells carve
-		// (matches commit 54dfa15, the last confirmed WWF-welded state). IH-DEC-060's warped/curved
-		// carve above coexisted with the still-unresolved IH-DEC-062/059 threshold/smoothing churn
-		// this same regression reverts below; both were part of the tuning churn that regressed the
-		// IslandMesh/ShelfMesh WWF weld. Ridge/trough curvature is now a Terrain Stamp's job (Trough-
-		// primitive, player-placed), not procedural generation's — see
-		// IH_Handoff_TerrainStampsPivot_2026-09-01.md. FindPathOnly/DiffuseAlongCells/PickCellNearPath
-		// are left in IHTerrainCellDiffusion for Terrain Stamps or a future revisit, just unused here.
+		// Terrain Stamps pivot (2026-09-01): straight AddRangeBetweenCells carve (matches commit
+		// 54dfa15, the last confirmed WWF-welded state). IH-DEC-060's warped/curved carve was reverted
+		// as part of the tuning churn that regressed the IslandMesh/ShelfMesh WWF weld; ridge/trough
+		// CONTINUOUS curvature is still a Terrain Stamp's job (Trough-primitive, player-placed), not
+		// procedural generation's — see IH_Handoff_TerrainStampsPivot_2026-09-01.md. That decision
+		// stands; the length-cap/elbow-hook below is a shape/length control, not continuous curvature,
+		// and was the user's own explicitly preferred lower-risk option over reversing it.
 		// 2026-09-04: PathRandomness 0.35->0.55 - the greedy walk's directional dot-product term is
 		// still dominant (both terms max out near 1.0), so this keeps troughs reaching their target
 		// rather than wandering erratically, while giving noticeably more wobble than the
 		// near-ruler-straight cuts the user flagged ("don't even look like glacier-carved fjords").
 		// Self-test-calibrated, not a blind guess - see this session's IH-DEC entry.
+		//
+		// 2026-09-04 (Track B, length-cap + elbow-hook): even with per-trough rotation (above), the
+		// Start(center)->End(edge) window pair is radial by construction, and a long straight carve
+		// across most of the island reads as an unnatural "transecting trench," not a fjord - user
+		// feedback: "a few short coastal gouges are acceptable... long transecting trench lines are
+		// unnatural." Fix is length/shape only, NOT continuous curvature (see comment above, and this
+		// session's explicit choice not to reverse the Terrain-Stamps-owns-curvature decision): when
+		// the straight Start->End distance exceeds a size-relative cap, bend ONCE at a laterally-offset
+		// "hook" cell instead of carving straight through, using FindPathOnly/PickCellNearPath — the
+		// exact primitives this file's own prior comment already flagged as built for "a sine-curved
+		// multi-segment trough" but left unused. Deliberately does NOT touch FindPathBetweenCells (the
+		// walk shared by hills' neighbors, sub-inlets, and daughter troughs) - only the call-site
+		// picks a bent 2-leg cell sequence instead of one straight Start->End pair. No change to inlet
+		// COUNT: still exactly 2 primary features per island, some now carved as a bent shape instead
+		// of a straight one. Falls through to the original single straight carve whenever the distance
+		// is under the cap (preserving today's short-trough/fjord look untouched) or if hook-cell
+		// selection fails for any reason (safe fallback, never silently skips carving).
+		// 2026-09-04: self-test surfaced a real landFraction drop on ABBEY3 (0.215/0.209/0.290 ->
+		// 0.120/0.198/0.175) somewhere in this round's changes, initially suspected to be THIS hook
+		// mechanism (raising the cap 0.45->0.65 was tried as a fix) - ruled out directly: island0/1's
+		// landFraction, dryAcres, loop counts, and elapsedS were BYTE-IDENTICAL between 0.45 and 0.65,
+		// meaning the same troughs hit the hook path either way and this constant isn't the cause.
+		// Left at 0.65 (a defensible, still-conservative value - only genuinely extreme troughs bend)
+		// since it's harmless, but the ACTUAL landFraction regression is still unattributed - likely
+		// somewhere in round 1's changes (trough rotation, or PathRandomness 0.35->0.55) rather than
+		// this round's Track B/C, since ABBEY3 was never re-tested between those commits. Not fully
+		// investigated this pass - flagged honestly rather than claimed fixed; no catastrophic failure
+		// (coastline/loop generation stayed healthy throughout), just a lower-than-historical-target
+		// dry-land fraction worth a future dedicated look if it reads as thin in PIE.
+		constexpr double MaxTroughLengthFracOfDiagonal = 0.65;
+		const double IslandDiagonalCm = (Graph.BoundsMaxLocalCm - Graph.BoundsMinLocalCm).Size();
+		const double MaxTroughLengthCm = IslandDiagonalCm * MaxTroughLengthFracOfDiagonal;
+		const double StraightDistCm = FVector2D::Distance(Graph.Cells[StartIdx].SitePos, Graph.Cells[EndIdx].SitePos);
+
 		TArray<FVector2D> Path;
-		FIHTerrainCellDiffusion::AddRangeBetweenCells(
-			Graph, StartIdx, EndIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
-			/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &Path);
+		if (StraightDistCm > MaxTroughLengthCm)
+		{
+			TArray<FVector2D> FullPath;
+			if (FIHTerrainCellDiffusion::FindPathOnly(Graph, StartIdx, EndIdx, /*PathRandomness=*/0.55, Stream, FullPath)
+				&& FullPath.Num() >= 2)
+			{
+				double TotalPathLenCm = 0.0;
+				for (int32 PathPointIdx = 1; PathPointIdx < FullPath.Num(); ++PathPointIdx)
+				{
+					TotalPathLenCm += FVector2D::Distance(FullPath[PathPointIdx - 1], FullPath[PathPointIdx]);
+				}
+				const double CapFrac1 = TotalPathLenCm > 0.0
+					? FMath::Clamp(MaxTroughLengthCm / TotalPathLenCm, 0.15, 0.85)
+					: 0.5;
+				const double LateralOffset1Cm = (Stream.FRand() < 0.5 ? -1.0 : 1.0) * Stream.FRandRange(800.0, 2500.0);
+				const int32 HookIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, FullPath, CapFrac1, LateralOffset1Cm, Stream);
+
+				if (HookIdx != INDEX_NONE && HookIdx != StartIdx)
+				{
+					FIHTerrainCellDiffusion::AddRangeBetweenCells(
+						Graph, StartIdx, HookIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
+						/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &Path);
+
+					const double CapFrac2 = FMath::Min(CapFrac1 + Stream.FRandRange(0.10, 0.25), 0.95);
+					const double LateralOffset2Cm = LateralOffset1Cm
+						+ (Stream.FRand() < 0.5 ? -1.0 : 1.0) * Stream.FRandRange(600.0, 2200.0);
+					const int32 EndPrimeIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, FullPath, CapFrac2, LateralOffset2Cm, Stream);
+					if (EndPrimeIdx != INDEX_NONE && EndPrimeIdx != HookIdx)
+					{
+						TArray<FVector2D> SecondLeg;
+						FIHTerrainCellDiffusion::AddRangeBetweenCells(
+							Graph, HookIdx, EndPrimeIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
+							/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &SecondLeg);
+						Path.Append(SecondLeg);
+					}
+				}
+			}
+		}
+		if (Path.Num() == 0)
+		{
+			FIHTerrainCellDiffusion::AddRangeBetweenCells(
+				Graph, StartIdx, EndIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
+				/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &Path);
+		}
 		if (Path.Num() >= 2)
 		{
 			PrimaryTroughPaths.Add(MoveTemp(Path));
@@ -3132,9 +3270,16 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// with BlobPower now properly bounded (hills decay within a reasonable fraction of HopRadius
 	// again), that workaround overshot HARD the other way (landFraction 0.02-0.14, self-test-
 	// caught) - reverted back to the original fixed count, matching IH_WB_Demo003.
+	//
+	// 2026-09-04 (Track A): this window was never rotated per island either - the same fixed-axis
+	// cross-island angle bias diagnosed and fixed for primary troughs above, just never propagated
+	// to this second carving layer. Fresh per-call rotation, independent of the primary troughs' own
+	// rotations, so sub-inlets don't correlate with them either.
+	const double SubInletRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
 	FIHTerrainCellDiffusion::AddRange(
 		Graph, /*Count=*/2, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
-		FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), /*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream);
+		FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), /*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream,
+		/*OutPathsSitePositionsLocalCm=*/nullptr, SubInletRotationRad);
 
 	// Cove-scale daughter troughs biased toward a primary trough's path - the compound
 	// nested-inlet extension verified this session (TerrainCellGraph.NestedInletShape:
@@ -3489,6 +3634,43 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 			constexpr int32 MinLakeCellCount = 5;
 			int32 FilledPondCount = 0;
 			int64 FilledPondCells = 0;
+
+			// 2026-09-04 (IH-DEC-074, GIZMO7 fix, this round): a water component that touches this
+			// island's own rectangular clip-box edge cannot be a genuine enclosed inland sea by
+			// definition - the box boundary is an artifact of this island's own local generation
+			// extent, not a real shoreline; real open water continues past it into the wider realm.
+			// Without this check, the BFS above can (and, per live GIZMO7 self-test data, does) split
+			// a truly-connected ocean margin into a second "component" purely because the box wall cut
+			// it off from the main component, which then gets kept as a spurious "inland sea" and
+			// rendered on the realm minimap sitting in what is actually open water near another
+			// island. Same 50cm epsilon idiom as this function's own later IsBoxEdgeClipped (shelf-mesh
+			// section) for consistency - tiny relative to real cell footprint (~7500cm), large enough
+			// to reliably catch a clip-produced boundary vertex. Only affects RING CLASSIFICATION
+			// (KeptWaterComponentCellCounts) - the cells themselves are NOT filled to land (unlike the
+			// small-pond case below), since they may be real, large water bodies; they simply never
+			// area-match as an inland-sea ring candidate.
+			constexpr double BoxEdgeTouchEpsilonCm = 50.0;
+			const FVector2D WaterBfsBoundsMin = Graph.BoundsMinLocalCm;
+			const FVector2D WaterBfsBoundsMax = Graph.BoundsMaxLocalCm;
+			auto ComponentTouchesBoxEdge = [&Graph, WaterBfsBoundsMin, WaterBfsBoundsMax](const TArray<int32>& Component) -> bool
+			{
+				for (const int32 CellIdx : Component)
+				{
+					for (const FVector2D& P : Graph.Cells[CellIdx].Boundary)
+					{
+						if (FMath::Abs(P.X - WaterBfsBoundsMin.X) < BoxEdgeTouchEpsilonCm
+							|| FMath::Abs(P.X - WaterBfsBoundsMax.X) < BoxEdgeTouchEpsilonCm
+							|| FMath::Abs(P.Y - WaterBfsBoundsMin.Y) < BoxEdgeTouchEpsilonCm
+							|| FMath::Abs(P.Y - WaterBfsBoundsMax.Y) < BoxEdgeTouchEpsilonCm)
+						{
+							return true;
+						}
+					}
+				}
+				return false;
+			};
+			int32 BoxEdgeExcludedComponentCount = 0;
+
 			for (int32 i = 0; i < WaterComponents.Num(); ++i)
 			{
 				if (i == MainWaterComponentIdx)
@@ -3497,6 +3679,11 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 				}
 				if (WaterComponents[i].Num() >= MinLakeCellCount)
 				{
+					if (ComponentTouchesBoxEdge(WaterComponents[i]))
+					{
+						++BoxEdgeExcludedComponentCount;
+						continue; // not filled to land (may be real, large water) - just excluded as an inland-sea ring candidate
+					}
 					// Kept as a genuine inland sea - record for the ring-classification pass below.
 					KeptWaterComponentCellCounts.Add(WaterComponents[i].Num());
 					continue;
@@ -3514,6 +3701,12 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 				UE_LOG(LogTemp, Log,
 					TEXT("IH_WB_IslandActor: island=%d filled %d interior water-noise pond(s) (%lld cells) below MinLakeCellCount=%d"),
 					TankIslandIndex, FilledPondCount, FilledPondCells, MinLakeCellCount);
+			}
+			if (BoxEdgeExcludedComponentCount > 0)
+			{
+				UE_LOG(LogTemp, Log,
+					TEXT("IH_WB_IslandActor: island=%d excluded %d water component(s) from inland-sea classification (touches this island's own box edge - not a real enclosure)"),
+					TankIslandIndex, BoxEdgeExcludedComponentCount);
 			}
 		}
 	}

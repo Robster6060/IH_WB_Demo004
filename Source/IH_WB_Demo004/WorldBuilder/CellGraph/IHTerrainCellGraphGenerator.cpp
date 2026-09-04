@@ -320,10 +320,12 @@ bool FIHTerrainCellGraphGenerator::BuildGraph(const FBuildParams& Params, FIHTer
 	const double MaxNeighborDistCm = ApproxCellSpacingCm * MaxNeighborDistRatio;
 	const double MaxNeighborDistSqCm = MaxNeighborDistCm * MaxNeighborDistCm;
 	int32 PrunedLongEdgeCount = 0;
+	int64 TotalNeighborEntryCount = 0; // TEMPORARY diagnostic (Track C) - see log line below
 	for (int32 i = 0; i < Sites.Num(); ++i)
 	{
 		TArray<int32> Filtered;
 		Filtered.Reserve(NeighborSets[i].Num());
+		TotalNeighborEntryCount += NeighborSets[i].Num();
 		for (const int32 NeighborIdx : NeighborSets[i])
 		{
 			if (MaxNeighborDistCm <= 0.0 || FVector2D::DistSquared(Sites[i], Sites[NeighborIdx]) <= MaxNeighborDistSqCm)
@@ -344,6 +346,16 @@ bool FIHTerrainCellGraphGenerator::BuildGraph(const FBuildParams& Params, FIHTer
 			TEXT("IHTerrainCellGraphGenerator: pruned %d degenerate long-range Neighbors edge(s) (>%.0fcm, %.1fx approxCellSpacing=%.1fcm) island=%d"),
 			PrunedLongEdgeCount / 2, MaxNeighborDistCm, MaxNeighborDistRatio, ApproxCellSpacingCm, Params.IslandIndex);
 	}
+	// TEMPORARY diagnostic (2026-09-04, Track C): PrunedLongEdgeCount as a PERCENTAGE of total
+	// Neighbor entries, to check whether small islands (low Sites.Num(), noisier ApproxCellSpacingCm
+	// density estimate) prune notably more/less aggressively than large ones - candidate mechanism 3
+	// for the small-island landFraction/wwfAcres pattern (IH-DEC-073), lower priority than the
+	// BlobPower/seed-height hypothesis (see IH_DIAG SmallIslandCheck in IH_WB_IslandActor.cpp) but
+	// checked here with real data rather than left purely theoretical.
+	UE_LOG(LogTemp, Log,
+		TEXT("IH_DIAG SmallIslandNeighborPrune island=%d cells=%d prunedEdges=%d totalNeighborEntries=%lld prunedPct=%.2f"),
+		Params.IslandIndex, Sites.Num(), PrunedLongEdgeCount / 2, TotalNeighborEntryCount / 2,
+		TotalNeighborEntryCount > 0 ? 100.0 * PrunedLongEdgeCount / static_cast<double>(TotalNeighborEntryCount) : 0.0);
 
 	OutGraph.BoundsMinLocalCm = BoundsMin;
 	OutGraph.BoundsMaxLocalCm = BoundsMax;

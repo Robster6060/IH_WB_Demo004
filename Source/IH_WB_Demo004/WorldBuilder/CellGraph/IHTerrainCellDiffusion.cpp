@@ -160,16 +160,30 @@ namespace IHTerrainCellDiffusionPrivate
 		return Best;
 	}
 
+	// 2026-09-04: optional RotationRad rotates the drawn target point about the window's own center
+	// (RangeXFrac/RangeYFrac straddling 0.5 keeps that center at the graph's own AABB center) before
+	// the nearest-cell lookup - same fixed-axis-bias fix applied to IH_WB_IslandActor.cpp's
+	// PickRandomCellInFracWindow for primary troughs, now available to AddRange's sub-inlet callers
+	// too. Default 0.0 (unchanged) for every other caller (AddHill, PickMinSpacedCellsInFractionalRange).
 	static int32 PickCellInFractionalRange(
 		const FIHTerrainCellGraph& Graph, const FVector2D& RangeXFrac, const FVector2D& RangeYFrac,
-		FRandomStream& Stream)
+		FRandomStream& Stream, double RotationRad = 0.0)
 	{
 		const FVector2D BoundsSize = Graph.BoundsMaxLocalCm - Graph.BoundsMinLocalCm;
 		const double TargetX = Graph.BoundsMinLocalCm.X + BoundsSize.X * Stream.FRandRange(
 			static_cast<float>(RangeXFrac.X), static_cast<float>(RangeXFrac.Y));
 		const double TargetY = Graph.BoundsMinLocalCm.Y + BoundsSize.Y * Stream.FRandRange(
 			static_cast<float>(RangeYFrac.X), static_cast<float>(RangeYFrac.Y));
-		return NearestCellToPoint(Graph, FVector2D(TargetX, TargetY));
+		FVector2D TargetPoint(TargetX, TargetY);
+		if (RotationRad != 0.0)
+		{
+			const FVector2D GraphCenter = Graph.BoundsMinLocalCm + BoundsSize * 0.5;
+			const double CosR = FMath::Cos(RotationRad);
+			const double SinR = FMath::Sin(RotationRad);
+			const FVector2D Local = TargetPoint - GraphCenter;
+			TargetPoint = GraphCenter + FVector2D(Local.X * CosR - Local.Y * SinR, Local.X * SinR + Local.Y * CosR);
+		}
+		return NearestCellToPoint(Graph, TargetPoint);
 	}
 
 	/** Records the site positions of a diffusion path, if the caller asked for them. */
@@ -279,7 +293,7 @@ void FIHTerrainCellDiffusion::AddRange(
 	FIHTerrainCellGraph& Graph, const int32 Count, const double HeightMin, const double HeightMax,
 	const FVector2D& RangeXFrac, const FVector2D& RangeYFrac, const double LinePower,
 	const double PathRandomness, FRandomStream& Stream,
-	TArray<TArray<FVector2D>>* OutPathsSitePositionsLocalCm)
+	TArray<TArray<FVector2D>>* OutPathsSitePositionsLocalCm, const double RotationRad)
 {
 	using namespace IHTerrainCellDiffusionPrivate;
 
@@ -295,8 +309,8 @@ void FIHTerrainCellDiffusion::AddRange(
 
 	for (int32 RangeIdx = 0; RangeIdx < Count; ++RangeIdx)
 	{
-		const int32 StartIdx = PickCellInFractionalRange(Graph, RangeXFrac, RangeYFrac, Stream);
-		const int32 EndIdx = PickCellInFractionalRange(Graph, RangeXFrac, RangeYFrac, Stream);
+		const int32 StartIdx = PickCellInFractionalRange(Graph, RangeXFrac, RangeYFrac, Stream, RotationRad);
+		const int32 EndIdx = PickCellInFractionalRange(Graph, RangeXFrac, RangeYFrac, Stream, RotationRad);
 		if (StartIdx == INDEX_NONE || EndIdx == INDEX_NONE || StartIdx == EndIdx)
 		{
 			continue;

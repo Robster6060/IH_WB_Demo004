@@ -81,6 +81,12 @@ public:
 	 * produces smooth blobs.
 	 * @param LinePower  Decay exponent per hop, steeper than BlobPower (Azgaar range ~0.75-0.93) — narrower cross-section than a hill.
 	 * @param PathRandomness  0 = always step toward the target cell; higher values wind more.
+	 * @param RotationRad  2026-09-04: rotates each candidate site by -RotationRad about the window
+	 *   pair's own center before the fractional-range test (both RangeXFrac/RangeYFrac straddling
+	 *   0.5 keeps the window's own center at the graph's AABB center), mirroring the fix applied to
+	 *   IH_WB_IslandActor.cpp's PickRandomCellInFracWindow for primary troughs - this window was
+	 *   never rotated per island either, sharing the same fixed-axis cross-island angle bias. Default
+	 *   0.0 (unchanged) for every existing caller; trailing param so no call site needs updating.
 	 */
 	static void AddRange(
 		FIHTerrainCellGraph& Graph,
@@ -92,7 +98,8 @@ public:
 		double LinePower,
 		double PathRandomness,
 		FRandomStream& Stream,
-		TArray<TArray<FVector2D>>* OutPathsSitePositionsLocalCm = nullptr);
+		TArray<TArray<FVector2D>>* OutPathsSitePositionsLocalCm = nullptr,
+		double RotationRad = 0.0);
 
 	/**
 	 * Same primitive as AddRange's single-trough body, but the start/end cells are caller-supplied
