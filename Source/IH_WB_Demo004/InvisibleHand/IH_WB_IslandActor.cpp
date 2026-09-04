@@ -3146,126 +3146,180 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// Hoisted (round 3): shared by the primary-trough length cap below AND the sub-inlet length
 	// targeting further down (Ask 2) - was previously recomputed per-primary-trough-iteration.
 	const double IslandDiagonalCm = (Graph.BoundsMaxLocalCm - Graph.BoundsMinLocalCm).Size();
-	for (int32 i = 0; i < NumPrimaryTroughs; ++i)
+
+	// 2026-09-04 (round 4): CANON CORRECTION, see this session's own IH-DEC entry. Earlier rounds'
+	// comments here claimed "continuous trough curvature is Terrain Stamps' job" as a standing
+	// 2026-09-01 decision - checked directly against IH_Canonical_Decisions.md this round and that
+	// is NOT what happened. IH-DEC-060 (2026-09-01) designed, tried, reverted TWICE for a real bug
+	// (chaining independently-carved segments multiplied total carved depth and severed the
+	// landmass), then SUCCESSFULLY FIXED AND SHIPPED the same day (commit 9a2638b): warp a single
+	// reference path via FindPathOnly + sine-varying PickCellNearPath offsets, diffuse it ONCE via
+	// DiffuseAlongCells (one height draw, one diffusion pass over the whole warped cell list - same
+	// cost as a straight carve, just bent) - user-confirmed acceptable in PIE at 8% amplitude.
+	// IH-DEC-065 (same day) reverted this working carve back to straight, but explicitly logged as
+	// "unrelated to the WWF bug; part of the HIGH/VOLC-adjacent tuning churn" swept out during the
+	// Terrain Stamps pivot's broad pre-churn regression - never a deliberate curvature-ownership
+	// decision. The "Terrain Stamp's job" phrasing was this session's OWN round-1 inference upon
+	// finding the already-reverted state, then mistakenly cited as "the standing decision" in round
+	// 2's plan and again in round 4's own clarifying question - compounding the error without
+	// re-checking the source. User confirmed (round 4): reverse it. Restoring IH-DEC-060's PROVEN
+	// mechanism below - lower risk than round 2/3's discrete elbow-hook workaround, since this one has
+	// already been through both failure modes and the fix, not a fresh design.
+	//
+	// Shared 2D segment-intersection test (Ask C, round 4): standard parametric-orientation test,
+	// used to keep primary troughs, sub-inlets, and daughter troughs from visibly crossing each other
+	// (user's own red-line-annotated "X" observations). Local to this function, not a new shared
+	// utility - narrow, single-purpose use.
+	auto SegmentsIntersect = [](const FVector2D& A, const FVector2D& B, const FVector2D& C, const FVector2D& D) -> bool
 	{
-		// 2026-09-04: fresh per-trough angle (not reused from the triangle's own rotation, so
-		// multiple troughs on one island don't also all align with each other) - see the
-		// PickRandomCellInFracWindow comment above for why this fixes the cross-island fixed-angle
-		// pattern the user flagged.
-		const double TroughRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
-		const int32 StartIdx = PickRandomCellInFracWindow(FVector2D(0.32, 0.68), FVector2D(0.32, 0.68), Stream, TroughRotationRad);
-		const int32 EndIdx = PickRandomCellInFracWindow(FVector2D(0.10, 0.90), FVector2D(0.10, 0.90), Stream, TroughRotationRad);
-		if (StartIdx == INDEX_NONE || EndIdx == INDEX_NONE || StartIdx == EndIdx)
+		auto Orient = [](const FVector2D& O, const FVector2D& P1, const FVector2D& P2) -> double
 		{
-			continue;
+			return (P1.X - O.X) * (P2.Y - O.Y) - (P1.Y - O.Y) * (P2.X - O.X);
+		};
+		const double D1 = Orient(C, D, A);
+		const double D2 = Orient(C, D, B);
+		const double D3 = Orient(A, B, C);
+		const double D4 = Orient(A, B, D);
+		return ((D1 > 0.0) != (D2 > 0.0)) && ((D3 > 0.0) != (D4 > 0.0));
+	};
+	// Every carved path on this island (primary troughs, sub-inlets, daughter troughs, in carving
+	// order) - candidates are checked against this BEFORE committing a carve, so later features avoid
+	// earlier ones. Deliberately island-local (not cross-island) - no shared coordinate frame need.
+	TArray<TArray<FVector2D>> AllCarvedPathsThisIsland;
+	auto PathCrossesExisting = [&AllCarvedPathsThisIsland, &SegmentsIntersect](const TArray<FVector2D>& Candidate) -> bool
+	{
+		if (Candidate.Num() < 2)
+		{
+			return false;
 		}
-
-		// Terrain Stamps pivot (2026-09-01): straight AddRangeBetweenCells carve (matches commit
-		// 54dfa15, the last confirmed WWF-welded state). IH-DEC-060's warped/curved carve was reverted
-		// as part of the tuning churn that regressed the IslandMesh/ShelfMesh WWF weld; ridge/trough
-		// CONTINUOUS curvature is still a Terrain Stamp's job (Trough-primitive, player-placed), not
-		// procedural generation's — see IH_Handoff_TerrainStampsPivot_2026-09-01.md. That decision
-		// stands; the length-cap/elbow-hook below is a shape/length control, not continuous curvature,
-		// and was the user's own explicitly preferred lower-risk option over reversing it.
-		// 2026-09-04: PathRandomness 0.35->0.55 - the greedy walk's directional dot-product term is
-		// still dominant (both terms max out near 1.0), so this keeps troughs reaching their target
-		// rather than wandering erratically, while giving noticeably more wobble than the
-		// near-ruler-straight cuts the user flagged ("don't even look like glacier-carved fjords").
-		// Self-test-calibrated, not a blind guess - see this session's IH-DEC entry.
-		//
-		// 2026-09-04 (Track B, length-cap + elbow-hook): even with per-trough rotation (above), the
-		// Start(center)->End(edge) window pair is radial by construction, and a long straight carve
-		// across most of the island reads as an unnatural "transecting trench," not a fjord - user
-		// feedback: "a few short coastal gouges are acceptable... long transecting trench lines are
-		// unnatural." Fix is length/shape only, NOT continuous curvature (see comment above, and this
-		// session's explicit choice not to reverse the Terrain-Stamps-owns-curvature decision): when
-		// the straight Start->End distance exceeds a size-relative cap, bend ONCE at a laterally-offset
-		// "hook" cell instead of carving straight through, using FindPathOnly/PickCellNearPath — the
-		// exact primitives this file's own prior comment already flagged as built for "a sine-curved
-		// multi-segment trough" but left unused. Deliberately does NOT touch FindPathBetweenCells (the
-		// walk shared by hills' neighbors, sub-inlets, and daughter troughs) - only the call-site
-		// picks a bent 2-leg cell sequence instead of one straight Start->End pair. No change to inlet
-		// COUNT: still exactly 2 primary features per island, some now carved as a bent shape instead
-		// of a straight one. Falls through to the original single straight carve whenever the distance
-		// is under the cap (preserving today's short-trough/fjord look untouched) or if hook-cell
-		// selection fails for any reason (safe fallback, never silently skips carving).
-		// 2026-09-04: self-test surfaced a real landFraction drop on ABBEY3 (0.215/0.209/0.290 ->
-		// 0.120/0.198/0.175) somewhere in this round's changes, initially suspected to be THIS hook
-		// mechanism (raising the cap 0.45->0.65 was tried as a fix) - ruled out directly: island0/1's
-		// landFraction, dryAcres, loop counts, and elapsedS were BYTE-IDENTICAL between 0.45 and 0.65,
-		// meaning the same troughs hit the hook path either way and this constant isn't the cause.
-		// Left at 0.65 (a defensible, still-conservative value - only genuinely extreme troughs bend)
-		// since it's harmless, but the ACTUAL landFraction regression is still unattributed - likely
-		// somewhere in round 1's changes (trough rotation, or PathRandomness 0.35->0.55) rather than
-		// this round's Track B/C, since ABBEY3 was never re-tested between those commits. Not fully
-		// investigated this pass - flagged honestly rather than claimed fixed; no catastrophic failure
-		// (coastline/loop generation stayed healthy throughout), just a lower-than-historical-target
-		// dry-land fraction worth a future dedicated look if it reads as thin in PIE.
-		constexpr double MaxTroughLengthFracOfDiagonal = 0.65;
-		const double MaxTroughLengthCm = IslandDiagonalCm * MaxTroughLengthFracOfDiagonal;
-		const double StraightDistCm = FVector2D::Distance(Graph.Cells[StartIdx].SitePos, Graph.Cells[EndIdx].SitePos);
-
-		TArray<FVector2D> Path;
-		if (StraightDistCm > MaxTroughLengthCm)
+		for (const TArray<FVector2D>& Existing : AllCarvedPathsThisIsland)
 		{
-			TArray<FVector2D> FullPath;
-			if (FIHTerrainCellDiffusion::FindPathOnly(Graph, StartIdx, EndIdx, /*PathRandomness=*/0.55, Stream, FullPath)
-				&& FullPath.Num() >= 2)
+			for (int32 E = 1; E < Existing.Num(); ++E)
 			{
-				double TotalPathLenCm = 0.0;
-				for (int32 PathPointIdx = 1; PathPointIdx < FullPath.Num(); ++PathPointIdx)
+				for (int32 C = 1; C < Candidate.Num(); ++C)
 				{
-					TotalPathLenCm += FVector2D::Distance(FullPath[PathPointIdx - 1], FullPath[PathPointIdx]);
-				}
-				const double CapFrac1 = TotalPathLenCm > 0.0
-					? FMath::Clamp(MaxTroughLengthCm / TotalPathLenCm, 0.15, 0.85)
-					: 0.5;
-				const double LateralOffset1Cm = (Stream.FRand() < 0.5 ? -1.0 : 1.0) * Stream.FRandRange(800.0, 2500.0);
-				const int32 HookIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, FullPath, CapFrac1, LateralOffset1Cm, Stream);
-
-				if (HookIdx != INDEX_NONE && HookIdx != StartIdx)
-				{
-					FIHTerrainCellDiffusion::AddRangeBetweenCells(
-						Graph, StartIdx, HookIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
-						/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &Path);
-
-					// 2026-09-04 (round 3, Ask 1): leg 2's target was previously parameterized as a
-					// FRACTION OF THE ORIGINAL FULL PATH (CapFrac1 + up to 0.25 more, capped at 0.95) -
-					// since that original path is often close to the island's full extent, leg 2 could
-					// add another 10-25 percentage points of a LONG reference length, so the bend
-					// redirected the trough partway through but the TOTAL distance traveled still ended
-					// up close to the original near-full length (self-test-confirmed root cause of why
-					// raising the cap 0.45->0.65 had zero effect - IH-DEC-077). Fixed: leg 2's target
-					// length is now proportional to MaxTroughLengthCm (the SHORT 65%-of-diagonal
-					// reference), not TotalPathLenCm - keeps the combined bent trough close to
-					// MaxTroughLengthCm * ~1.1-1.3 instead of drifting back toward the unbent length.
-					const double Leg2TargetLenCm = Stream.FRandRange(0.10, 0.20) * MaxTroughLengthCm;
-					const double CapFrac2 = TotalPathLenCm > 0.0
-						? FMath::Min(CapFrac1 + Leg2TargetLenCm / TotalPathLenCm, 0.95)
-						: CapFrac1;
-					const double LateralOffset2Cm = LateralOffset1Cm
-						+ (Stream.FRand() < 0.5 ? -1.0 : 1.0) * Stream.FRandRange(600.0, 2200.0);
-					const int32 EndPrimeIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, FullPath, CapFrac2, LateralOffset2Cm, Stream);
-					if (EndPrimeIdx != INDEX_NONE && EndPrimeIdx != HookIdx)
+					if (SegmentsIntersect(Existing[E - 1], Existing[E], Candidate[C - 1], Candidate[C]))
 					{
-						TArray<FVector2D> SecondLeg;
-						FIHTerrainCellDiffusion::AddRangeBetweenCells(
-							Graph, HookIdx, EndPrimeIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
-							/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &SecondLeg);
-						Path.Append(SecondLeg);
+						return true;
 					}
 				}
 			}
 		}
-		if (Path.Num() == 0)
+		return false;
+	};
+
+	// Restored IH-DEC-060 mechanism (round 4): reference path once (FindPathOnly), sample waypoints
+	// along it with a sine-varying lateral offset (PickCellNearPath), diffuse the resulting cell list
+	// ONCE (DiffuseAlongCells) - never chaining independent segments, the exact structural cause of
+	// both historical severing regressions. AmplitudeFrac answers "bend radius" (how far the path
+	// bulges); Periods answers "sinusoidal, less linear" (how many bulges - 1.0 is IH-DEC-060's own
+	// proven single-S-curve baseline, self-test-calibrated up from there this round).
+	auto BuildSineCurveCandidate = [&Graph](
+		int32 StartIdx, int32 EndIdx, double AmplitudeFrac, double Periods, double PathRandomness,
+		FRandomStream& RandStream, TArray<int32>& OutSeedIndices, TArray<FVector2D>& OutPositions) -> bool
+	{
+		OutSeedIndices.Reset();
+		OutPositions.Reset();
+		TArray<FVector2D> RefPath;
+		if (!FIHTerrainCellDiffusion::FindPathOnly(Graph, StartIdx, EndIdx, PathRandomness, RandStream, RefPath)
+			|| RefPath.Num() < 2)
 		{
-			FIHTerrainCellDiffusion::AddRangeBetweenCells(
-				Graph, StartIdx, EndIdx, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0,
-				/*LinePower=*/0.85, /*PathRandomness=*/0.55, Stream, &Path);
+			return false;
 		}
-		if (Path.Num() >= 2)
+		double RefPathLenCm = 0.0;
+		for (int32 P = 1; P < RefPath.Num(); ++P)
 		{
-			PrimaryTroughPaths.Add(MoveTemp(Path));
+			RefPathLenCm += FVector2D::Distance(RefPath[P - 1], RefPath[P]);
+		}
+		constexpr int32 NumWaypoints = 9;
+		for (int32 W = 0; W < NumWaypoints; ++W)
+		{
+			const double AlongFrac = static_cast<double>(W) / static_cast<double>(NumWaypoints - 1);
+			const double LateralOffsetCm = AmplitudeFrac * RefPathLenCm * FMath::Sin(2.0 * PI * Periods * AlongFrac);
+			const int32 Idx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, RefPath, AlongFrac, LateralOffsetCm, RandStream);
+			if (Idx != INDEX_NONE && (OutSeedIndices.Num() == 0 || OutSeedIndices.Last() != Idx))
+			{
+				OutSeedIndices.Add(Idx);
+				OutPositions.Add(Graph.Cells[Idx].SitePos);
+			}
+		}
+		return OutSeedIndices.Num() >= 2;
+	};
+
+	constexpr double PrimaryAmplitudeFrac = 0.12; // self-test-calibrated, up from IH-DEC-060's proven 0.08
+	constexpr double PrimaryPeriods = 1.4; // >1.0 (IH-DEC-060's single S-curve) for a wavier look
+	constexpr double MaxTroughLengthFracOfDiagonal = 0.65;
+	const double MaxTroughLengthCm = IslandDiagonalCm * MaxTroughLengthFracOfDiagonal;
+	constexpr int32 MaxCrossingRetries = 6;
+
+	for (int32 i = 0; i < NumPrimaryTroughs; ++i)
+	{
+		TArray<int32> ChosenSeedIndices;
+		TArray<FVector2D> ChosenPositions;
+		for (int32 Retry = 0; Retry < MaxCrossingRetries; ++Retry)
+		{
+			// 2026-09-04: fresh per-trough angle (not reused from the triangle's own rotation, so
+			// multiple troughs on one island don't also all align with each other) - see the
+			// PickRandomCellInFracWindow comment above for why this fixes the cross-island fixed-angle
+			// pattern the user flagged.
+			const double TroughRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
+			const int32 StartIdx = PickRandomCellInFracWindow(FVector2D(0.32, 0.68), FVector2D(0.32, 0.68), Stream, TroughRotationRad);
+			const int32 RawEndIdx = PickRandomCellInFracWindow(FVector2D(0.10, 0.90), FVector2D(0.10, 0.90), Stream, TroughRotationRad);
+			if (StartIdx == INDEX_NONE || RawEndIdx == INDEX_NONE || StartIdx == RawEndIdx)
+			{
+				continue;
+			}
+
+			// Length cap (round 3, Ask 1 - re-derived from a SHORT reference each retry, not the
+			// original path's own length, per that round's own hard-won lesson): if the raw pick
+			// exceeds the cap, replace End with a capped-distance point along the same direction
+			// before the sine warp ever runs, so the warp bends a short reference, not a long one.
+			int32 EndIdx = RawEndIdx;
+			const double StraightDistCm = FVector2D::Distance(Graph.Cells[StartIdx].SitePos, Graph.Cells[RawEndIdx].SitePos);
+			if (StraightDistCm > MaxTroughLengthCm)
+			{
+				TArray<FVector2D> UncappedRefPath;
+				if (FIHTerrainCellDiffusion::FindPathOnly(Graph, StartIdx, RawEndIdx, /*PathRandomness=*/0.55, Stream, UncappedRefPath)
+					&& UncappedRefPath.Num() >= 2)
+				{
+					double UncappedLenCm = 0.0;
+					for (int32 P = 1; P < UncappedRefPath.Num(); ++P)
+					{
+						UncappedLenCm += FVector2D::Distance(UncappedRefPath[P - 1], UncappedRefPath[P]);
+					}
+					const double CapFrac = UncappedLenCm > 0.0
+						? FMath::Clamp(MaxTroughLengthCm / UncappedLenCm, 0.15, 0.95)
+						: 1.0;
+					const int32 CappedEndIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, UncappedRefPath, CapFrac, 0.0, Stream);
+					if (CappedEndIdx != INDEX_NONE && CappedEndIdx != StartIdx)
+					{
+						EndIdx = CappedEndIdx;
+					}
+				}
+			}
+
+			TArray<int32> CandidateSeedIndices;
+			TArray<FVector2D> CandidatePositions;
+			if (!BuildSineCurveCandidate(StartIdx, EndIdx, PrimaryAmplitudeFrac, PrimaryPeriods, /*PathRandomness=*/0.55,
+				Stream, CandidateSeedIndices, CandidatePositions))
+			{
+				continue;
+			}
+			if (PathCrossesExisting(CandidatePositions) && Retry < MaxCrossingRetries - 1)
+			{
+				continue; // a non-crossing redraw is preferred but not required - last retry accepts regardless (Ask C)
+			}
+			ChosenSeedIndices = MoveTemp(CandidateSeedIndices);
+			ChosenPositions = MoveTemp(CandidatePositions);
+			break;
+		}
+
+		if (ChosenSeedIndices.Num() >= 2)
+		{
+			FIHTerrainCellDiffusion::DiffuseAlongCells(
+				Graph, ChosenSeedIndices, /*HeightMin=*/-35.0, /*HeightMax=*/-20.0, /*LinePower=*/0.85, Stream);
+			AllCarvedPathsThisIsland.Add(ChosenPositions);
+			PrimaryTroughPaths.Add(MoveTemp(ChosenPositions));
 		}
 	}
 
@@ -3299,40 +3353,70 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	// (fresh rotation each try) and keeps whichever lands closest to a per-inlet target length - the
 	// same "retry-and-keep-best" idiom PickRandomCellInFracWindow itself already uses internally, not
 	// a new geometric search. Carves via AddRangeBetweenCells with AddRange's own former parameters.
+	// 2026-09-04 (round 4): sine-curve carve (same restored IH-DEC-060 mechanism as primary troughs
+	// above) + crossing avoidance (Ask C), gentler amplitude than primary troughs since sub-inlets are
+	// already shorter (~33% diagonal vs. primary's 65% cap).
+	constexpr double SubInletAmplitudeFrac = 0.10;
+	constexpr double SubInletPeriods = 1.2;
 	constexpr int32 NumSubInlets = 2;
 	constexpr int32 MaxSubInletLengthTries = 12;
 	for (int32 SubInletIdx = 0; SubInletIdx < NumSubInlets; ++SubInletIdx)
 	{
-		const double SubInletStartRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
-		const int32 SubInletStartIdx = PickRandomCellInFracWindow(FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), Stream, SubInletStartRotationRad);
-		if (SubInletStartIdx == INDEX_NONE)
+		TArray<int32> ChosenSeedIndices;
+		TArray<FVector2D> ChosenPositions;
+		for (int32 CrossingRetry = 0; CrossingRetry < MaxCrossingRetries; ++CrossingRetry)
 		{
-			continue;
-		}
-		const double TargetSubInletLenCm = Stream.FRandRange(0.28, 0.38) * IslandDiagonalCm;
-		int32 BestEndIdx = INDEX_NONE;
-		double BestLenDeltaCm = TNumericLimits<double>::Max();
-		for (int32 Try = 0; Try < MaxSubInletLengthTries; ++Try)
-		{
-			const double CandidateRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
-			const int32 CandidateEndIdx = PickRandomCellInFracWindow(FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), Stream, CandidateRotationRad);
-			if (CandidateEndIdx == INDEX_NONE || CandidateEndIdx == SubInletStartIdx)
+			const double SubInletStartRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
+			const int32 SubInletStartIdx = PickRandomCellInFracWindow(FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), Stream, SubInletStartRotationRad);
+			if (SubInletStartIdx == INDEX_NONE)
 			{
 				continue;
 			}
-			const double CandidateLenCm = FVector2D::Distance(Graph.Cells[SubInletStartIdx].SitePos, Graph.Cells[CandidateEndIdx].SitePos);
-			const double LenDeltaCm = FMath::Abs(CandidateLenCm - TargetSubInletLenCm);
-			if (LenDeltaCm < BestLenDeltaCm)
+			const double TargetSubInletLenCm = Stream.FRandRange(0.28, 0.38) * IslandDiagonalCm;
+			int32 BestEndIdx = INDEX_NONE;
+			double BestLenDeltaCm = TNumericLimits<double>::Max();
+			for (int32 Try = 0; Try < MaxSubInletLengthTries; ++Try)
 			{
-				BestLenDeltaCm = LenDeltaCm;
-				BestEndIdx = CandidateEndIdx;
+				const double CandidateRotationRad = Stream.FRandRange(0.0, 2.0 * PI);
+				const int32 CandidateEndIdx = PickRandomCellInFracWindow(FVector2D(0.30, 0.70), FVector2D(0.30, 0.70), Stream, CandidateRotationRad);
+				if (CandidateEndIdx == INDEX_NONE || CandidateEndIdx == SubInletStartIdx)
+				{
+					continue;
+				}
+				const double CandidateLenCm = FVector2D::Distance(Graph.Cells[SubInletStartIdx].SitePos, Graph.Cells[CandidateEndIdx].SitePos);
+				const double LenDeltaCm = FMath::Abs(CandidateLenCm - TargetSubInletLenCm);
+				if (LenDeltaCm < BestLenDeltaCm)
+				{
+					BestLenDeltaCm = LenDeltaCm;
+					BestEndIdx = CandidateEndIdx;
+				}
 			}
+			if (BestEndIdx == INDEX_NONE)
+			{
+				continue;
+			}
+
+			TArray<int32> CandidateSeedIndices;
+			TArray<FVector2D> CandidatePositions;
+			if (!BuildSineCurveCandidate(SubInletStartIdx, BestEndIdx, SubInletAmplitudeFrac, SubInletPeriods,
+				/*PathRandomness=*/0.5, Stream, CandidateSeedIndices, CandidatePositions))
+			{
+				continue;
+			}
+			if (PathCrossesExisting(CandidatePositions) && CrossingRetry < MaxCrossingRetries - 1)
+			{
+				continue;
+			}
+			ChosenSeedIndices = MoveTemp(CandidateSeedIndices);
+			ChosenPositions = MoveTemp(CandidatePositions);
+			break;
 		}
-		if (BestEndIdx != INDEX_NONE)
+
+		if (ChosenSeedIndices.Num() >= 2)
 		{
-			FIHTerrainCellDiffusion::AddRangeBetweenCells(
-				Graph, SubInletStartIdx, BestEndIdx, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0,
-				/*LinePower=*/0.78, /*PathRandomness=*/0.5, Stream);
+			FIHTerrainCellDiffusion::DiffuseAlongCells(
+				Graph, ChosenSeedIndices, /*HeightMin=*/-50.0, /*HeightMax=*/-30.0, /*LinePower=*/0.78, Stream);
+			AllCarvedPathsThisIsland.Add(MoveTemp(ChosenPositions));
 		}
 	}
 
@@ -3355,15 +3439,41 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		{
 			continue;
 		}
-		const double AlongFrac = Stream.FRandRange(0.25, 0.75);
-		const double LateralCm = (Stream.FRand() < 0.5 ? -1.0 : 1.0) * Stream.FRandRange(600.0, 2200.0);
-		const int32 StartIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, ParentPath, AlongFrac, LateralCm, Stream);
-		const int32 EndIdx = FIHTerrainCellDiffusion::PickCellNearPath(
-			Graph, ParentPath, FMath::Clamp(AlongFrac + Stream.FRandRange(0.08, 0.18), 0.0, 1.0),
-			LateralCm * 1.6, Stream);
+		// 2026-09-04 (round 4, Ask C): lighter-weight crossing check than primary/sub-inlet troughs -
+		// daughter troughs are already short/cove-scale and probabilistic (60% chance), so a couple of
+		// redraws is enough; still falls through to carving on the last attempt regardless (never
+		// blocks generation).
+		double AlongFrac = 0.0, LateralCm = 0.0;
+		int32 StartIdx = INDEX_NONE, EndIdx = INDEX_NONE;
+		constexpr int32 MaxDaughterCrossingRetries = 3;
+		for (int32 DaughterRetry = 0; DaughterRetry < MaxDaughterCrossingRetries; ++DaughterRetry)
+		{
+			AlongFrac = Stream.FRandRange(0.25, 0.75);
+			LateralCm = (Stream.FRand() < 0.5 ? -1.0 : 1.0) * Stream.FRandRange(600.0, 2200.0);
+			StartIdx = FIHTerrainCellDiffusion::PickCellNearPath(Graph, ParentPath, AlongFrac, LateralCm, Stream);
+			EndIdx = FIHTerrainCellDiffusion::PickCellNearPath(
+				Graph, ParentPath, FMath::Clamp(AlongFrac + Stream.FRandRange(0.08, 0.18), 0.0, 1.0),
+				LateralCm * 1.6, Stream);
+			if (StartIdx == INDEX_NONE || EndIdx == INDEX_NONE || StartIdx == EndIdx)
+			{
+				continue;
+			}
+			const TArray<FVector2D> CandidateSegment = { Graph.Cells[StartIdx].SitePos, Graph.Cells[EndIdx].SitePos };
+			if (PathCrossesExisting(CandidateSegment) && DaughterRetry < MaxDaughterCrossingRetries - 1)
+			{
+				continue;
+			}
+			break;
+		}
 		if (StartIdx == INDEX_NONE || EndIdx == INDEX_NONE || StartIdx == EndIdx)
 		{
 			continue;
+		}
+		{
+			TArray<FVector2D> DaughterPath;
+			DaughterPath.Add(Graph.Cells[StartIdx].SitePos);
+			DaughterPath.Add(Graph.Cells[EndIdx].SitePos);
+			AllCarvedPathsThisIsland.Add(MoveTemp(DaughterPath));
 		}
 		FIHTerrainCellDiffusion::AddRangeBetweenCells(
 			Graph, StartIdx, EndIdx, /*HeightMin=*/-55.0, /*HeightMax=*/-35.0,
