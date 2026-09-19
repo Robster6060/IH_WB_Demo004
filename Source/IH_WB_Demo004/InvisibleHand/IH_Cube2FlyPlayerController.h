@@ -30,6 +30,8 @@ class UIH_P1C07_NavAvoidanceSubsystem;
 class UIH_P1C08_MinimapSubsystem;
 class UIH_BuildPaletteSubsystem;
 class AIH_TownGridManager;
+class AIH_P1C07_MerchantmanShipActor;
+class AIH_StructurePlacementActor;
 
 /** Same free-fly presentation as P1C06 NWG: WASD / arrow keys + QE / PgUp PgDn, RMB look, MMB yaw drag, wheel dolly. */
 UCLASS()
@@ -68,6 +70,10 @@ public:
 	/** Viewport-local mouse; works with NoCapture (GetMousePosition requires attached mouse). */
 	bool TryGetViewportMousePosition(FVector2D& OutViewportPos) const;
 
+	// 2026-09-18: exposed so UIH_BuildPaletteHostWidget can gate diagnostic logging while
+	// investigating the "D&D doesn't work in Top Down View" report without spamming Regular View.
+	bool IsTopDownViewActive() const;
+
 protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
@@ -80,6 +86,11 @@ protected:
 
 	UFUNCTION()
 	void HandleBuildPaletteGridTogglePressed();
+
+	/** Ctrl+Z, active only while a Terrain Stamp is selected in W-tab edit mode - LIFO undo of
+	 * move/rotate/delete for the current stamp-selection session (2026-09-10). */
+	UFUNCTION()
+	void HandleStampUndoPressed();
 
 	UFUNCTION()
 	void HandlePauseTogglePressed();
@@ -123,7 +134,26 @@ private:
 	/** Visibility miss fallback: nearest registered ship within ScreenRadiusPx. */
 	AActor* FindNearestRegisteredShipAtScreen(const FVector2D& ScreenPos, float ScreenRadiusPx) const;
 	bool TryPlaceMerchantmanAtScreen(const FVector2D& ScreenPos);
+	/**
+	 * 2026-09-13: shared resolution/spawn helpers factored out of TryPlaceMerchantmanAtScreen so the
+	 * new Convey (C) flyout's dev Merchantman drag tile spawns with EXACTLY identical placement
+	 * behavior to the Place Ship widget - same water-point resolution, same spawn/label/select/log -
+	 * with zero duplicated logic to drift out of sync.
+	 */
+	bool TryResolveShipPlacementWorldPoint(const FVector2D& ScreenPos, FVector& OutPoint) const;
+	AIH_P1C07_MerchantmanShipActor* SpawnAndSelectMerchantmanAt(const FVector& SpawnPoint);
 	bool TryPlaceMannequinAtScreen(const FVector2D& ScreenPos);
+
+	// 2026-09-12: Mannequin troop movement - mirrors TryIssueMoveOrderAtScreen/
+	// HandleRightMouseReleaseForShipOrders exactly, resolving against walkable land (the same
+	// multi-hit-trace + IslandActorTag technique TryPlaceMannequinAtScreen already uses) instead of
+	// open water. A parallel, independent path - never touches the ship functions above.
+	bool TryIssueMannequinMoveOrderAtScreen(
+		const FVector2D& ScreenPos,
+		class UIH_P1C08_MannequinRegistrySubsystem* Registry,
+		bool bAppendWaypoint = false);
+	void HandleRightMouseReleaseForMannequinOrders(const FVector2D& ViewportPick);
+	AActor* TraceSelectableMannequinAtScreen(const FVector2D& ScreenPos) const;
 	bool AbsoluteToViewportLocal(const FVector2D& AbsolutePos, FVector2D& OutViewportPos) const;
 	void EnsureViewportKeyboardFocus();
 	bool IsLeftMouseButtonDown() const;
@@ -157,6 +187,9 @@ private:
 	FVector2D LeftMouseDragStart = FVector2D::ZeroVector;
 	FVector2D LeftMouseDragStartAbsolute = FVector2D::ZeroVector;
 	FVector2D RightMouseDragStart = FVector2D::ZeroVector;
+	/** 2026-09-14: was Shift held at ANY point during the current RMB press-hold-release cycle -
+	 * more forgiving than polling Shift fresh at the exact release frame (see PlayerTick). */
+	bool bShiftHeldDuringRightMouseHold = false;
 	FVector2D PrevMousePixels = FVector2D::ZeroVector;
 	TObjectPtr<UIH_P1C07_SelectionLassoWidget> LassoWidget;
 	TObjectPtr<UIH_P1C08_CoastlineTuningWidget> CoastlineTuningWidget;
@@ -195,6 +228,11 @@ private:
 	void ShowConfirmRevertDialog(TFunction<void(bool bRevertConfirmed)> OnComplete);
 
 public:
+	/**
+	 * New Convey (C) flyout dev tile entry point, called from UIH_BuildPaletteSubsystem's generic
+	 * DropActor commit path - see TryResolveShipPlacementWorldPoint/SpawnAndSelectMerchantmanAt.
+	 */
+	bool TrySpawnMerchantmanAtScreen(const FVector2D& ScreenPos);
 	void ShowConfirmDialog(
 		const FString& Title,
 		const FString& Body,
@@ -247,6 +285,12 @@ public:
 	void SelectTownGridManager(AIH_TownGridManager* Manager);
 	void DeselectTownGridManager();
 	AIH_TownGridManager* GetSelectedTownGridManager() const { return SelectedTownGridManager.Get(); }
+
+	/** 2026-09-13: selectable-actor-hierarchy - Structure (B) double-click select, mirrors Town Grid. */
+	AIH_StructurePlacementActor* TraceSelectableStructureAtScreen(const FVector2D& ScreenPos) const;
+	void SelectStructurePlacement(AIH_StructurePlacementActor* Structure);
+	void DeselectStructurePlacement();
+	AIH_StructurePlacementActor* GetSelectedStructurePlacement() const { return SelectedStructurePlacement.Get(); }
 	void TickIslandManipulationInput(float DeltaTime);
 	void TickIslandManipulationGizmo(float DeltaTime);
 	void TickTerrainStampManipulationInput(float DeltaTime);
@@ -313,7 +357,25 @@ public:
 	TWeakObjectPtr<AIH_TownGridManager> SelectedTownGridManager;
 	bool bTownGridMovePointerCapture = false;
 	bool bStampMovePointerCapture = false;
+	bool bStampGripPointerCapture = false;
+	TWeakObjectPtr<AIH_StructurePlacementActor> SelectedStructurePlacement;
+	bool bStructureMovePointerCapture = false;
+	static constexpr float StructureWheelRotateDeg = 5.f;
 
+	// 2026-09-13: selectable-actor-hierarchy - Ship/Mannequin/Town Grid select gesture
+	// standardized to double-click, matching Island/Terrain Stamp (mirrors LastClickedIslandIndex/
+	// LastIslandClickTimeSec's own GetRealTimeSeconds()-based pattern, immune to the Game Speed
+	// slider's time dilation).
+	TWeakObjectPtr<AActor> LastClickedShip;
+	float LastShipClickTimeSec = -1.f;
+	TWeakObjectPtr<AActor> LastClickedMannequin;
+	float LastMannequinClickTimeSec = -1.f;
+	TWeakObjectPtr<AIH_TownGridManager> LastClickedTownGridForDoubleClick;
+	float LastTownGridClickTimeSec = -1.f;
+	TWeakObjectPtr<AIH_StructurePlacementActor> LastClickedStructure;
+	float LastStructureClickTimeSec = -1.f;
+
+	static constexpr float ActorDoubleClickWindowSec = 0.45f;
 	static constexpr float IslandDoubleClickWindowSec = 0.45f;
 	static constexpr float IslandRotateStepDeg = 5.f;
 	static constexpr float IslandShiftWheelRotateDeg = 3.f;

@@ -78,6 +78,15 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FString biomeColor;
 
+	/** 2026-09-18: DEV View "BIOME" mode's color source - the per-biome hex from
+	 * ASLSlopeBiomeFinalChart.xlsx's own hexColor column, matched 1:1 by biomeID against this
+	 * table's 48 rows. Deliberately separate from biomeColor above, which must keep driving DEV
+	 * View "BANDS" mode (the original always-on elevation-tier coloring) unchanged - BANDS uses
+	 * one flat color per elevation tier, BIOME differentiates by the finer per-biome/slope chart.
+	 * Same hex format/decode rule as biomeColor (FLinearColor::FromSRGBColor(FColor::FromHex(Hex))). */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
+	FString biomeDetailColorHex;
+
 	/** WWF / Shorelands / Lowlands / Midlands / Highlands / Montane / Alpine — the 7 elevation
 	 * tiers (IH-DEC-056). Plain FName for now (matches this project's own precedent of starting
 	 * categorization fields as FName before formalizing into a UENUM once cross-system usage

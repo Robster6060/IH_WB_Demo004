@@ -9,6 +9,25 @@
  */
 namespace IHDevViewRuntime
 {
+	/** 2026-09-18: DEV View's island-coloring mode, mutually exclusive - replaces the standalone
+	 * Contours/Features/Show Nav checkboxes in the HUD (their underlying AreContoursVisible/
+	 * AreFeaturesVisible functions below and the Show Nav engine-showflag path stay callable, just
+	 * no longer wired to any checkbox, mirroring this project's existing GrabContrast-checkbox
+	 * retirement precedent). BANDS = today's always-on flat per-elevation-tier coloring (unchanged
+	 * default). BIOME = finer per-biome coloring from ASLSlopeBiomeFinalChart.xlsx's own hexColor
+	 * chart (FIHASLSlopeBiomeRow::biomeDetailColorHex). PGC = reserved for a future procedural-
+	 * scatter view; renders identically to BANDS until that exists (never a blank/broken island). */
+	enum class EIHDevColorMode : uint8
+	{
+		Bands,
+		Biome,
+		PGC
+	};
+
+	EIHDevColorMode GetDevColorMode();
+	void SetDevColorMode(EIHDevColorMode Mode);
+	void ApplyDevColorModeToWorld(UWorld* World);
+
 	/** WaterBodyOcean + WaterZone / custom ocean plane visible. */
 	bool IsOceanVisible();
 	void SetOceanVisible(bool bVisible);

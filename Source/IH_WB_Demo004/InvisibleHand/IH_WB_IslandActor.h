@@ -7,6 +7,7 @@
 #include "IHP1C10_AzgaarTypes.h"
 #include "FIHTerrainStampTypes.h"
 #include "IHCoastGenerationTypes.h"
+#include "IHDevViewRuntime.h"
 #include "IH_WB_IslandActor.generated.h"
 
 class UProceduralMeshComponent;
@@ -65,11 +66,17 @@ public:
 	void ApplyDevFeaturesVisibility(bool bVisible);
 	/** DEV GrabContrast: darken TOPO tier MIDs for fidelity grabs (no regen). */
 	void ApplyDevGrabContrastMaterials(bool bGrabContrast);
+	/** 2026-09-18: DEV View BANDS/BIOME/PGC toggle - recolors IslandMesh's already-built biome
+	 * sections in place (cheap material swap via BiomeSectionRowIndices, no mesh rebuild). */
+	void ApplyDevColorMode(IHDevViewRuntime::EIHDevColorMode Mode);
 	void RebuildCoastFromCachedHeightfield() {}
 
-	void RegisterTerrainStamp(AIH_TerrainStampActor* /*Stamp*/) {}
-	void UnregisterTerrainStamp(AIH_TerrainStampActor* /*Stamp*/) {}
-	void ClearPlacedTerrainStamps() {}
+	// 2026-09-09: real bookkeeping now (was a no-op stub alongside the retired procedural
+	// height-grid path) - static-mesh stamps use this array for the concurrent-placed-stamp soft
+	// limit (IHInvisibleHandSpec::TerrainStampMeshWarnCountPerIsland/HardStopCountPerIsland).
+	void RegisterTerrainStamp(AIH_TerrainStampActor* Stamp) { if (Stamp) { PlacedTerrainStamps.AddUnique(Stamp); } }
+	void UnregisterTerrainStamp(AIH_TerrainStampActor* Stamp) { if (Stamp) { PlacedTerrainStamps.Remove(Stamp); } }
+	void ClearPlacedTerrainStamps() { PlacedTerrainStamps.Reset(); }
 	void ReapplyAllTerrainStampsToHeightGrid() {}
 	void SyncPlacedTerrainStampSurfaceAnchors() {}
 	void CollectTerrainStampReplayEntries(TArray<FIHPlacedTerrainStampReplayEntry>& OutEntries) const { OutEntries.Reset(); }
@@ -177,6 +184,12 @@ protected:
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AIH_TerrainStampActor>> PlacedTerrainStamps;
+
+	// 2026-09-18: parallel to IslandMesh's biome-classified mesh sections (built by
+	// ApplyDtBiomeColorBands) - BiomeSectionRowIndices[SectionIdx] is that section's index into a
+	// freshly-sorted GetBiomeRowsSortedForClassification() array, letting ApplyDevColorMode recolor
+	// every section in place via SetMaterial without re-classifying triangles or rebuilding geometry.
+	TArray<int32> BiomeSectionRowIndices;
 
 	TArray<float> HeightsMeters;
 	int32 SamplesPerSide = 0;

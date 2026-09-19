@@ -11,15 +11,20 @@
 #include "IH_TownGridSquaredGenerator.h"
 #include "IHInvisibleHandDesignSpec.h"
 #include "IH_P1C07_IslandCollisionSubsystem.h"
+#include "IH_P1C07_ShipRegistrySubsystem.h"
 #include "IH_WB_IslandActor.h"
 #include "FIHTerrainStampTypes.h"
+#include "FIHTerrainStampMeshTypes.h"
 #include "IH_TerrainStampLibrary.h"
 #include "IH_TerrainStampActor.h"
 #include "IH_WB_Demo004GameMode.h"
 #include "Components/PrimitiveComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "DrawDebugHelpers.h"
 #include "Engine/DataTable.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "HAL/IConsoleManager.h"
 
 namespace IH_BuildPaletteSubsystemPrivate
@@ -814,6 +819,13 @@ void UIH_BuildPaletteSubsystem::LogFirstOpenIfNeeded()
 }
 void UIH_BuildPaletteSubsystem::SyncWidgetFlyOutState()
 {
+	const bool bWasWorldOpen = bLastSyncedFlyOutOpen && LastSyncedFlyOutTab == EIHBuildPaletteTab::World;
+	const bool bNowWorldOpen = bFlyOutOpen && ActiveTab == EIHBuildPaletteTab::World;
+	if (bWasWorldOpen != bNowWorldOpen)
+	{
+		RefreshAllTerrainStampsPassiveTint(bNowWorldOpen);
+	}
+
 	if (!BuildPaletteWidget)
 	{
 		return;
@@ -843,6 +855,13 @@ void UIH_BuildPaletteSubsystem::SyncWidgetFlyOutStateIfChanged()
 	if (!bTabChanged)
 	{
 		return;
+	}
+
+	const bool bWasWorldOpen = bLastSyncedFlyOutOpen && LastSyncedFlyOutTab == EIHBuildPaletteTab::World;
+	const bool bNowWorldOpen = bFlyOutOpen && ActiveTab == EIHBuildPaletteTab::World;
+	if (bWasWorldOpen != bNowWorldOpen)
+	{
+		RefreshAllTerrainStampsPassiveTint(bNowWorldOpen);
 	}
 
 	if (bFlyOutOpen)
@@ -877,10 +896,61 @@ void UIH_BuildPaletteSubsystem::CloseFlyOut()
 	CancelDrag();
 	ClearTerrainStampSelection();
 	bFlyOutOpen = false;
+	ClearSelectionsOutsideActiveScope(nullptr);
 	SyncWidgetFlyOutState();
 	if (BuildPaletteWidget)
 	{
 		BuildPaletteWidget->RequestLayoutRefresh();
+	}
+}
+
+void UIH_BuildPaletteSubsystem::ClearSelectionsOutsideActiveScope(AIH_Cube2FlyPlayerController* PC)
+{
+	// 2026-09-13: selectable-actor-hierarchy - centralizes what used to be two special-cased
+	// deselect calls inline in OpenTabFlyOut (Build->TownGrid, World->Island). Now every category
+	// not selectable under the CURRENT tab state gets force-deselected uniformly, from both
+	// OpenTabFlyOut and CloseFlyOut, not just on the next stray click.
+	if (!PC)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			PC = Cast<AIH_Cube2FlyPlayerController>(World->GetFirstPlayerController());
+		}
+	}
+	if (!PC)
+	{
+		return;
+	}
+
+	if (!IsCategorySelectableNow(EIHBuildPaletteTab::Grid))
+	{
+		PC->DeselectTownGridManager();
+	}
+	if (!IsCategorySelectableNow(EIHBuildPaletteTab::Build))
+	{
+		PC->DeselectStructurePlacement();
+	}
+	if (!IsCategorySelectableNow(EIHBuildPaletteTab::World))
+	{
+		ClearTerrainStampSelection();
+	}
+	if (!IsCategorySelectableNow(EIHBuildPaletteTab::Convey))
+	{
+		if (UGameInstance* GI = GetGameInstance())
+		{
+			if (UIH_P1C07_ShipRegistrySubsystem* ShipRegistry = GI->GetSubsystem<UIH_P1C07_ShipRegistrySubsystem>())
+			{
+				ShipRegistry->ClearSelection();
+			}
+		}
+	}
+	// Mannequin deliberately excluded - stays outside the GWBCD hierarchy, always selectable.
+
+	if (bFlyOutOpen)
+	{
+		// Island is the "nothing open" default - any tab opening blocks it immediately. Closing
+		// back down to "nothing open" makes it selectable again, not something to deselect.
+		PC->RequestDeselectIsland();
 	}
 }
 void UIH_BuildPaletteSubsystem::OpenTabFlyOut(EIHBuildPaletteTab Tab, AIH_Cube2FlyPlayerController* PC)
@@ -914,17 +984,17 @@ void UIH_BuildPaletteSubsystem::OpenTabFlyOut(EIHBuildPaletteTab Tab, AIH_Cube2F
 	{
 		BuildPaletteWidget->RefreshBuildTemplateList();
 	}
+	else if (Tab == EIHBuildPaletteTab::Convey)
+	{
+		BuildPaletteWidget->RefreshConveyTemplateList();
+	}
 	ActiveTab = Tab;
 	bFlyOutOpen = true;
-	if (Tab == EIHBuildPaletteTab::Build)
-	{
-		PC->DeselectTownGridManager();
-	}
-	else if (Tab == EIHBuildPaletteTab::World)
+	if (Tab == EIHBuildPaletteTab::World)
 	{
 		PC->ResetIslandViewportDoubleClickTracking();
-		PC->RequestDeselectIsland();
 	}
+	ClearSelectionsOutsideActiveScope(PC);
 	BuildPaletteWidget->SetIsEnabled(true);
 	BuildPaletteWidget->SetRenderOpacity(1.f);
 	SyncWidgetFlyOutState();
@@ -952,7 +1022,9 @@ void UIH_BuildPaletteSubsystem::OpenTabFlyOut(EIHBuildPaletteTab Tab, AIH_Cube2F
 }
 bool UIH_BuildPaletteSubsystem::IsViewportIslandSelectionBlocked() const
 {
-	if (IsTerrainStampDragActive())
+	// 2026-09-13: selectable-actor-hierarchy canon — Island is the "nothing open" default, so ANY
+	// open fly-out blocks it now, not just World's (widened from the original FIX-001d W-only gate).
+	if (!IsIslandSelectableNow())
 	{
 		return true;
 	}
@@ -963,12 +1035,18 @@ bool UIH_BuildPaletteSubsystem::IsViewportIslandSelectionBlocked() const
 		return true;
 	}
 
-	if (bFlyOutOpen && ActiveTab == EIHBuildPaletteTab::World)
+	return false;
+}
+
+bool UIH_BuildPaletteSubsystem::IsWorldStampEditModeActive() const
+{
+	// Terrain Stamp selection stays scoped to W specifically (or an active stamp drag) even though
+	// Island's own block now covers every tab — these are deliberately independent questions.
+	if (IsTerrainStampDragActive())
 	{
 		return true;
 	}
-
-	return false;
+	return IsCategorySelectableNow(EIHBuildPaletteTab::World);
 }
 void UIH_BuildPaletteSubsystem::OpenGridPanel(AIH_Cube2FlyPlayerController* PC)
 {
@@ -1071,6 +1149,34 @@ bool UIH_BuildPaletteSubsystem::BeginDragFromItem(FName ItemID, AIH_Cube2FlyPlay
 	return true;
 }
 
+bool UIH_BuildPaletteSubsystem::BeginDragForMerchantmanTile(AIH_Cube2FlyPlayerController* PC)
+{
+	AIH_Cube2FlyPlayerController* FlyPC = PC ? PC : PaletteOwnerPC.Get();
+	if (!FlyPC)
+	{
+		return false;
+	}
+	PaletteOwnerPC = FlyPC;
+
+	FIHBuildPaletteItemRow Row;
+	Row.itemID = FName(TEXT("Merchantman"));
+	Row.paletteTab = EIHBuildPaletteTab::Convey;
+	Row.interactionType = EIHBuildPaletteInteraction::DropActor;
+	Row.displayName = TEXT("Merchantman");
+
+	ActiveTab = Row.paletteTab;
+	DragPayload = Row;
+	bDragActive = true;
+	bDragGhostLocationValid = false;
+	DragGhostDrawCenterWorld = FVector::ZeroVector;
+	DragPlacementActorOrigin = FVector::ZeroVector;
+	// No ghost preview - dev tile, resolved/spawned directly on drop (TryCompleteDropAtScreen's
+	// Convey branch), unlike Build's structure-mesh ghost which this deliberately skips.
+
+	UE_LOG(LogIH_WB_Demo004, Log, TEXT("BuildPalette drag started — Merchantman (Convey dev tile)"));
+	return true;
+}
+
 bool UIH_BuildPaletteSubsystem::BeginDragFromTerrainStamp(
 	const EIHTerrainStampId StampId,
 	AIH_Cube2FlyPlayerController* PC)
@@ -1170,9 +1276,28 @@ bool UIH_BuildPaletteSubsystem::CommitActiveTerrainStampDrop(
 	const FVector& SurfaceWorld,
 	const EIHTerrainStampId StampId)
 {
-	if (!Island || !Island->HasCellHeightGrid() || StampId >= EIHTerrainStampId::MAX)
+	// 2026-09-09: the procedural height-grid path this gate used to require
+	// (Island->HasCellHeightGrid()) is dead code - HasCellHeightGrid() always returns false, so
+	// every stamp drop already silently failed. Real static-mesh stamps (FIHTerrainStampMeshCatalog/
+	// DT_TerrainStamp) replace it - a stamp can be dropped once its DataTable row has a real mesh.
+	if (!Island || StampId >= EIHTerrainStampId::MAX || !FIHTerrainStampMeshCatalog::IsAvailable(StampId))
 	{
 		return false;
+	}
+
+	const int32 ExistingStampCount = Island->GetPlacedTerrainStamps().Num();
+	if (ExistingStampCount >= IHInvisibleHandSpec::TerrainStampMeshHardStopCountPerIsland)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("Terrain Stamp drop blocked: island=%d already has %d placed stamps (hard stop %d)"),
+			Island->GetTankIslandIndex(), ExistingStampCount, IHInvisibleHandSpec::TerrainStampMeshHardStopCountPerIsland);
+		return false;
+	}
+	if (ExistingStampCount >= IHInvisibleHandSpec::TerrainStampMeshWarnCountPerIsland)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("Terrain Stamp count warning: island=%d has %d placed stamps (soft warn threshold %d, hard stop %d)"),
+			Island->GetTankIslandIndex(), ExistingStampCount, IHInvisibleHandSpec::TerrainStampMeshWarnCountPerIsland, IHInvisibleHandSpec::TerrainStampMeshHardStopCountPerIsland);
 	}
 
 	UWorld* World = FlyPC ? FlyPC->GetWorld() : Island->GetWorld();
@@ -1181,37 +1306,20 @@ bool UIH_BuildPaletteSubsystem::CommitActiveTerrainStampDrop(
 		return false;
 	}
 
-	const FIHTerrainStampDefinition& Def = FIHTerrainStampCatalog::Get(StampId);
-	FActorSpawnParameters SpawnParams;
-	SpawnParams.Owner = Island;
-	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
-
-	AIH_TerrainStampActor* PlacedStamp = World->SpawnActor<AIH_TerrainStampActor>(
-		AIH_TerrainStampActor::StaticClass(),
-		SurfaceWorld,
-		FRotator(0.f, 0.f, 0.f),
-		SpawnParams);
+	AIH_TerrainStampActor* PlacedStamp = SpawnBareStampActor(World, Island, StampId);
 	if (!PlacedStamp)
 	{
-		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Phase B2b stamp spawn failed island=%d stamp=%s"),
-			Island->GetTankIslandIndex(), *Def.RowName.ToString());
 		return false;
 	}
 
-	PlacedStamp->InitializeStamp(StampId, Def.bDefaultInvert, false);
-	PlacedStamp->SetDragPreviewMode(false);
 	PlacedStamp->ApplyWorldSurfacePlacement(Island, SurfaceWorld);
-	PlacedStamp->RegisterAllComponents();
-	PlacedStamp->RefreshPreviewMesh();
-	PlacedStamp->SetActorHiddenInGame(false);
-	PlacedStamp->SetActorEnableCollision(false);
-	Island->RegisterTerrainStamp(PlacedStamp);
 	Island->ReapplyAllTerrainStampsToHeightGrid();
 	Island->SyncPlacedTerrainStampSurfaceAnchors();
 	SelectTerrainStamp(PlacedStamp);
 	LogTerrainStampReplayHeaderStub();
 
 #if !UE_BUILD_SHIPPING
+	const FIHTerrainStampDefinition& Def = FIHTerrainStampCatalog::Get(StampId);
 	UE_LOG(
 		LogIH_WB_Demo004, Log,
 		TEXT("Phase B2b stamp placed island=%d stamp=%s stamps=%d previewVerts=%d surface=%s"),
@@ -1223,6 +1331,60 @@ bool UIH_BuildPaletteSubsystem::CommitActiveTerrainStampDrop(
 #endif
 	(void)FlyPC;
 	return true;
+}
+
+AIH_TerrainStampActor* UIH_BuildPaletteSubsystem::SpawnBareStampActor(
+	UWorld* World, AIH_WB_IslandActor* Island, EIHTerrainStampId StampId)
+{
+	if (!World || !Island)
+	{
+		return nullptr;
+	}
+
+	const FIHTerrainStampDefinition& Def = FIHTerrainStampCatalog::Get(StampId);
+	FActorSpawnParameters SpawnParams;
+	SpawnParams.Owner = Island;
+	SpawnParams.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+
+	AIH_TerrainStampActor* NewStamp = World->SpawnActor<AIH_TerrainStampActor>(
+		AIH_TerrainStampActor::StaticClass(),
+		FVector::ZeroVector,
+		FRotator(0.f, 0.f, 0.f),
+		SpawnParams);
+	if (!NewStamp)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Phase B2b stamp spawn failed island=%d stamp=%s"),
+			Island->GetTankIslandIndex(), *Def.RowName.ToString());
+		return nullptr;
+	}
+
+	NewStamp->InitializeStamp(StampId, Def.bDefaultInvert, false);
+	NewStamp->SetDragPreviewMode(false);
+	NewStamp->RegisterAllComponents();
+	NewStamp->RefreshPreviewMesh();
+	NewStamp->SetActorHiddenInGame(false);
+	NewStamp->SetActorEnableCollision(true);
+	Island->RegisterTerrainStamp(NewStamp);
+	// 2026-09-11: a stamp can only be spawned while the W tab is open, but that's a pre-existing
+	// state, not a fresh open/close transition - RefreshAllTerrainStampsPassiveTint never runs for
+	// it. Without this, a stamp placed then deselected (panel still open) would wrongly fall back
+	// to its real material instead of AllStampsToggleColor per the Task 1/2 spec.
+	NewStamp->SetPassiveToggleTinted(bFlyOutOpen && ActiveTab == EIHBuildPaletteTab::World);
+
+#if WITH_EDITOR
+	// 2026-09-10: Outliner previously showed the generic class name ("IH_TerrainStampActor1") -
+	// matches the Ship/Mannequin placement convention (SetActorLabel), using the actual mesh name
+	// so e.g. a placed Mesa reads "TableMesa001" (UE auto-dedupes additional copies with a suffix).
+	if (const UStaticMeshComponent* MeshComp = NewStamp->GetMeshComponent())
+	{
+		if (const UStaticMesh* Mesh = MeshComp->GetStaticMesh())
+		{
+			NewStamp->SetActorLabel(Mesh->GetName());
+		}
+	}
+#endif
+
+	return NewStamp;
 }
 
 bool UIH_BuildPaletteSubsystem::TryCommitTerrainStampDropAtStoredPlacement(APlayerController* PC)
@@ -1498,6 +1660,21 @@ void UIH_BuildPaletteSubsystem::UpdateDragGhostFromScreen(APlayerController* PC,
 
 	if (DragPayload.paletteTab == EIHBuildPaletteTab::Build)
 	{
+		// 2026-09-18 fix: "Structure drag is far away from mouse indicator" - the world-space raycast
+		// TryResolveValidBuildDragAtScreen uses has no concept of 2D HUD panels drawn over the
+		// viewport. Since a Build-tab drag STARTS by clicking a tile inside the palette panel itself,
+		// the cursor's early movement is very likely to still be over that same panel - the raycast
+		// would then resolve against whatever real-world geometry happens to sit behind it (often
+		// distant terrain/ocean, since the palette sits at the screen edge), snapping the "sticky"
+		// ghost to a spurious point far from where the user is actually aiming. Hold the ghost at its
+		// last valid position instead while the cursor is over any interactive panel, exactly like the
+		// existing sticky-on-invalid-point behavior for other unresolvable cursor positions.
+		if (FlyPC->IsScreenPointOverInteractiveHUDPanel(ScreenPos))
+		{
+			UpdateBuildDragPreviewTransform();
+			return;
+		}
+
 		FVector NewDrawCenter = DragGhostDrawCenterWorld;
 		FVector NewActorOrigin = DragPlacementActorOrigin;
 		if (IH_BuildPaletteSubsystemPrivate::TryResolveValidBuildDragAtScreen(
@@ -1839,6 +2016,23 @@ bool UIH_BuildPaletteSubsystem::TryCompleteDropAtWorldXY(APlayerController* PC, 
 		return CommitActiveStructureDrop(FlyPC, World, SpawnLocation);
 	}
 
+	// 2026-09-13: same fix as TryCompleteDropAtScreen's own Grid-fallback - this is the minimap-drop
+	// twin of that function and had the identical bug (any non-Build DragPayload, e.g. the new
+	// Convey Merchantman tile if ever dropped over an open minimap, silently spawned a Town Grid
+	// instead). The Convey dev tile does not yet support minimap-drop placement (screen-space water
+	// resolution only) - this now safely no-ops instead of mis-spawning if that's ever attempted.
+	if (DragPayload.paletteTab != EIHBuildPaletteTab::Grid)
+	{
+		UE_LOG(
+			LogIH_WB_Demo004, Warning,
+			TEXT("BuildPalette drop (minimap) — unhandled paletteTab=%d interaction=%d item=%s, ignoring"),
+			static_cast<int32>(DragPayload.paletteTab),
+			static_cast<int32>(DragPayload.interactionType),
+			*DragPayload.itemID.ToString());
+		CancelDrag();
+		return false;
+	}
+
 	FVector SpawnLocation = FVector::ZeroVector;
 	if (!IH_BuildPaletteSubsystemPrivate::TryResolveGridDragLocationFromWorldXY(
 		FlyPC, WorldXY, SpawnLocation))
@@ -1913,6 +2107,34 @@ bool UIH_BuildPaletteSubsystem::TryCompleteDropAtScreen(APlayerController* PC, c
 		}
 
 		return CommitActiveStructureDrop(FlyPC, World, SpawnLocation);
+	}
+
+	if (DragPayload.paletteTab == EIHBuildPaletteTab::Convey
+		&& DragPayload.interactionType == EIHBuildPaletteInteraction::DropActor)
+	{
+		// 2026-09-13: dev-only Merchantman drag tile - must be branched explicitly here, ahead of
+		// the Grid fallback below, which otherwise assumes "not Stamp, not Build-DropActor" means
+		// Grid and would incorrectly spawn a AIH_TownGridManager for this payload instead.
+		const bool bSpawned = FlyPC->TrySpawnMerchantmanAtScreen(ScreenPos);
+		CancelDrag();
+		return bSpawned;
+	}
+
+	// 2026-09-13: was an unconditional "else = Grid" fallback - made explicit after a report of the
+	// new Convey tile spawning a Town Grid instead of a Merchantman. Any DragPayload that doesn't
+	// match Stamp/Build/Convey above AND isn't actually tagged Grid now safely no-ops (with a log)
+	// instead of silently defaulting to a Town Grid spawn - whatever the real trigger turns out to
+	// be, it can no longer masquerade as a Grid drop.
+	if (DragPayload.paletteTab != EIHBuildPaletteTab::Grid)
+	{
+		UE_LOG(
+			LogIH_WB_Demo004, Warning,
+			TEXT("BuildPalette drop — unhandled paletteTab=%d interaction=%d item=%s, ignoring (was falling through to Grid spawn before this fix)"),
+			static_cast<int32>(DragPayload.paletteTab),
+			static_cast<int32>(DragPayload.interactionType),
+			*DragPayload.itemID.ToString());
+		CancelDrag();
+		return false;
 	}
 
 	FVector ImpactPoint = FVector::ZeroVector;
@@ -1991,7 +2213,26 @@ bool UIH_BuildPaletteSubsystem::TryFindTerrainStampAtScreen(
 			}
 			const FVector2D StampXY(Stamp->GetActorLocation().X, Stamp->GetActorLocation().Y);
 			const float DistSq = FVector2D::DistSquared(SurfaceXY, StampXY);
-			const float PickRadiusCm = Stamp->RadiusKm * 100000.f * 1.05f;
+			// 2026-09-18 fix: RadiusKm is a leftover property from the old procedural-heightfield
+			// system and does not track the stamp's actual current static-mesh footprint (nor any
+			// Stage-12b grip resize) - a stamp visually larger than RadiusKm*100000cm implies could
+			// be clicked confidently inside its real shape yet still miss this check, silently
+			// falling through to the raycast fallback below (which is not always reached first,
+			// depending on whether TrySampleIslandSurfaceAtScreen itself resolved). Derive the pick
+			// radius from the mesh's real current XY bounds (scaled) instead, same pattern already
+			// used for ComputeFootprintSampleXYPoints.
+			float PickRadiusCm = Stamp->RadiusKm * 100000.f * 1.05f;
+			if (const UStaticMeshComponent* MeshComp = Stamp->GetMeshComponent())
+			{
+				if (const UStaticMesh* Mesh = MeshComp->GetStaticMesh())
+				{
+					const FBoxSphereBounds Bounds = Mesh->GetBounds();
+					const FVector MeshScale = MeshComp->GetRelativeScale3D();
+					const float HalfExtentX = Bounds.BoxExtent.X * MeshScale.X;
+					const float HalfExtentY = Bounds.BoxExtent.Y * MeshScale.Y;
+					PickRadiusCm = FMath::Max(HalfExtentX, HalfExtentY) * 1.15f;
+				}
+			}
 			if (DistSq <= FMath::Square(PickRadiusCm) && DistSq < BestDistSq)
 			{
 				BestStamp = Stamp;
@@ -2087,7 +2328,12 @@ bool UIH_BuildPaletteSubsystem::TryHandleStampSelectionClickAtViewport(
 	AIH_TerrainStampActor* HitStamp = nullptr;
 	if (TryFindTerrainStampAtScreen(FlyPC, ViewportPick, HitStamp) && HitStamp)
 	{
-		const float Now = World->GetTimeSeconds();
+		// 2026-09-11 fix: GetTimeSeconds() is DILATED game time - this project's own dev "Game Speed"
+		// slider (screenshotted at 7.5x) shrinks a real half-second double-click into ~0.06s of game
+		// time, making the window physically impossible to hit whenever speed != 1.0x (root cause of
+		// a "can't reselect a stamp" report). Double-click is fundamentally a real-world human-input
+		// timing, so it needs GetRealTimeSeconds() regardless of simulation speed.
+		const float Now = World->GetRealTimeSeconds();
 		const bool bDoubleClick = HitStamp == LastClickedStamp.Get()
 			&& (Now - LastStampClickTimeSec) <= StampDoubleClickWindowSec;
 		LastClickedStamp = HitStamp;
@@ -2121,7 +2367,7 @@ bool UIH_BuildPaletteSubsystem::TryHandleStampSelectionClickAtViewport(
 	return false;
 }
 
-void UIH_BuildPaletteSubsystem::SelectTerrainStamp(AIH_TerrainStampActor* Stamp)
+void UIH_BuildPaletteSubsystem::SelectTerrainStamp(AIH_TerrainStampActor* Stamp, bool bPreserveUndoStack)
 {
 	if (SelectedTerrainStamp.Get() == Stamp)
 	{
@@ -2131,6 +2377,14 @@ void UIH_BuildPaletteSubsystem::SelectTerrainStamp(AIH_TerrainStampActor* Stamp)
 	if (AIH_TerrainStampActor* Previous = SelectedTerrainStamp.Get())
 	{
 		Previous->SetStampSelected(false);
+	}
+	// 2026-09-10: the undo stack is scoped to one continuous selection session - moving selection
+	// to a different stamp starts a fresh, empty stack (matches ClearTerrainStampSelection below).
+	// Skipped when re-selecting a just-respawned stamp during undo itself (bPreserveUndoStack) -
+	// otherwise popping one record would immediately erase every record still below it.
+	if (!bPreserveUndoStack)
+	{
+		StampUndoStack.Reset();
 	}
 
 	SelectedTerrainStamp = Stamp;
@@ -2180,6 +2434,23 @@ bool UIH_BuildPaletteSubsystem::TrySelectNearestTerrainStampOnIsland(
 	return false;
 }
 
+void UIH_BuildPaletteSubsystem::RefreshAllTerrainStampsPassiveTint(bool bWorldTabOpen)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return;
+	}
+	for (TActorIterator<AIH_TerrainStampActor> It(World); It; ++It)
+	{
+		AIH_TerrainStampActor* Stamp = *It;
+		if (Stamp && !Stamp->IsDragPreview())
+		{
+			Stamp->SetPassiveToggleTinted(bWorldTabOpen);
+		}
+	}
+}
+
 void UIH_BuildPaletteSubsystem::ClearTerrainStampSelection()
 {
 	if (AIH_TerrainStampActor* Previous = SelectedTerrainStamp.Get())
@@ -2188,6 +2459,7 @@ void UIH_BuildPaletteSubsystem::ClearTerrainStampSelection()
 	}
 	SelectedTerrainStamp = nullptr;
 	bStampMoveDragActive = false;
+	StampUndoStack.Reset();
 }
 
 void UIH_BuildPaletteSubsystem::BeginStampMoveDrag(AIH_TerrainStampActor* Stamp)
@@ -2198,9 +2470,12 @@ void UIH_BuildPaletteSubsystem::BeginStampMoveDrag(AIH_TerrainStampActor* Stamp)
 	}
 	SelectTerrainStamp(Stamp);
 	bStampMoveDragActive = true;
+	PendingMoveDragStartTransform = Stamp->GetActorTransform();
+	PendingMoveDragStartDepthCm = Stamp->GetCurrentDepthBelowSurfaceCm();
+	LastStampMoveDragRealTimeSec = -1.f;
 }
 
-void UIH_BuildPaletteSubsystem::UpdateStampMoveDrag(APlayerController* PC, const FVector2D& ScreenPos)
+void UIH_BuildPaletteSubsystem::UpdateStampMoveDrag(APlayerController* PC, const FVector2D& ScreenPos, float TotalScreenDeltaYFromDragStart)
 {
 	if (!bStampMoveDragActive)
 	{
@@ -2227,7 +2502,75 @@ void UIH_BuildPaletteSubsystem::UpdateStampMoveDrag(APlayerController* PC, const
 		return;
 	}
 
-	Stamp->ApplyWorldSurfacePlacement(Island, SurfaceWorld);
+	// 2026-09-17: "molasses" damping, per explicit user request - relocating an already-placed stamp
+	// while it's over ITS OWN island (this whole function only ever runs in that case; the target-
+	// island check above already excludes open water / other islands) used to snap the stamp directly
+	// onto the raw cursor-traced surface point every tick, which reads as jerky/stuttery and makes
+	// fine positioning hard. Smoothly easing the XY toward the cursor instead (VInterpTo, re-sampling
+	// the real terrain height at the eased XY via ApplyWorldSurfacePlacement) gives it deliberate
+	// weight without changing the SEPARATE initial drag-from-W-gallery-across-open-ocean placement
+	// flow (UpdateDragGhostFromScreen/TryCommitTerrainStampDropAtStoredPlacement), which stays snappy
+	// on purpose - flying a brand-new stamp roughly into place doesn't need fine control.
+	// 2026-09-17 fix: GetDeltaSeconds() is dilated by the dev Game Speed slider (same pitfall this
+	// project already root-caused for double-click timing) - at any speed above 1.0x this made the
+	// eased position jump proportionally further per tick, reading as "jumps out of frame." Track
+	// real (undilated) time manually instead, same GetRealTimeSeconds() pattern used elsewhere.
+	float DeltaSeconds = 0.f;
+	if (UWorld* World = FlyPC->GetWorld())
+	{
+		const float NowReal = World->GetRealTimeSeconds();
+		if (LastStampMoveDragRealTimeSec >= 0.f)
+		{
+			DeltaSeconds = FMath::Max(0.f, NowReal - LastStampMoveDragRealTimeSec);
+		}
+		LastStampMoveDragRealTimeSec = NowReal;
+	}
+	// 2026-09-17 fix: Stamp->GetActorLocation().Z is the actor's PIVOT - already offset well below
+	// the visible surface by CurrentDepthBelowSurfaceCm plus the mesh's own bottom-to-origin distance
+	// (see ApplyWorldSurfacePlacement below) - not comparable to SurfaceWorld.Z, a raw traced ground
+	// height. Blending the two in VInterpTo produced a garbage mid-air Z that made the floating-guard
+	// validation above fail on nearly every tick, freezing the stamp in place (rotation still worked
+	// since it's a separate code path untouched by this). Only the horizontal XY needs "molasses"
+	// easing for fine positioning - Z should always come fresh from the real traced surface height,
+	// exactly like ApplyWorldSurfacePlacement's own re-sampling already does.
+	const FVector CurrentLoc = Stamp->GetActorLocation();
+	const FVector2D DampedXY = DeltaSeconds > 0.f
+		? FMath::Vector2DInterpTo(
+			FVector2D(CurrentLoc.X, CurrentLoc.Y), FVector2D(SurfaceWorld.X, SurfaceWorld.Y),
+			DeltaSeconds, StampRelocateDampingInterpSpeed)
+		: FVector2D(SurfaceWorld.X, SurfaceWorld.Y);
+	const FVector DampedTarget(DampedXY.X, DampedXY.Y, SurfaceWorld.Z);
+
+	// 2026-09-17 fix: the eased XY above is a straight-line lerp between the stamp's last position
+	// and the fresh cursor point - on a non-convex island (or a fast drag that briefly outpaces the
+	// damping) that line can pass through a gap with no island collision under it at all. Previously
+	// ApplyWorldSurfacePlacement just accepted whatever raw point it was given when BOTH its own
+	// surface-sample and fallback trace failed to find real terrain, so the stamp would render
+	// "floating"/"detached" out over open water instead of on the island. Validate the damped XY
+	// resolves to real island surface BEFORE committing to it; if not, hold the stamp at its last
+	// known-good position this tick rather than moving it into invalid space - it resumes moving the
+	// instant the eased path comes back over the island.
+	bool bDampedTargetOnIsland = false;
+	if (const UGameInstance* GI = FlyPC->GetGameInstance())
+	{
+		if (const UIH_P1C07_IslandCollisionSubsystem* IslandCollision =
+			GI->GetSubsystem<UIH_P1C07_IslandCollisionSubsystem>())
+		{
+			FVector ValidationSurface = FVector::ZeroVector;
+			bDampedTargetOnIsland = IslandCollision->TrySampleIslandSurfaceAtXY(
+				FVector2D(DampedTarget.X, DampedTarget.Y), DampedTarget.Z, 0.f, Stamp, ValidationSurface);
+		}
+	}
+	if (!bDampedTargetOnIsland)
+	{
+		return;
+	}
+
+	// 2026-09-11: "merge into IslandMesh" canon - set sink depth from TOTAL vertical mouse movement
+	// since drag-start BEFORE ApplyWorldSurfacePlacement, so the new depth is already in effect when
+	// that recomputes Z.
+	Stamp->SetManualSinkDepthFromDragTotal(PendingMoveDragStartDepthCm, TotalScreenDeltaYFromDragStart);
+	Stamp->ApplyWorldSurfacePlacement(Island, DampedTarget);
 }
 
 void UIH_BuildPaletteSubsystem::EndStampMoveDrag()
@@ -2240,12 +2583,145 @@ void UIH_BuildPaletteSubsystem::EndStampMoveDrag()
 
 	if (AIH_TerrainStampActor* Stamp = SelectedTerrainStamp.Get())
 	{
+		// 2026-09-10: push an undo record only if the drag actually moved the stamp - a click that
+		// starts and ends the drag without moving the mouse shouldn't create a no-op undo step.
+		// 2026-09-11: also checks sink depth, since a purely-vertical mouse movement could change
+		// depth without moving the transform enough to trip the Equals() check on its own (unlikely
+		// in practice - depth changes always move Location.Z too - but cheap to check explicitly).
+		const bool bTransformChanged = !Stamp->GetActorTransform().Equals(PendingMoveDragStartTransform, KINDA_SMALL_NUMBER);
+		const bool bDepthChanged = !FMath::IsNearlyEqual(Stamp->GetCurrentDepthBelowSurfaceCm(), PendingMoveDragStartDepthCm, 0.01f);
+		if (bTransformChanged || bDepthChanged)
+		{
+			FIHStampUndoRecord Record;
+			Record.ActionType = EIHStampUndoActionType::Transform;
+			Record.Stamp = Stamp;
+			Record.PreviousTransform = PendingMoveDragStartTransform;
+			Record.PreviousDepthBelowSurfaceCm = PendingMoveDragStartDepthCm;
+			PushStampUndoRecord(Record);
+		}
+
 		if (AIH_WB_IslandActor* Island = Stamp->GetTargetIsland())
 		{
 			Island->ReapplyAllTerrainStampsToHeightGrid();
 			LogTerrainStampReplayHeaderStub();
 		}
 	}
+}
+
+// --- Stage 12b (2026-09-11): bounding-box scale grips. Mirrors Begin/UpdateStampMoveDrag/
+// EndStampMoveDrag's own split of responsibility - the actor (AIH_TerrainStampActor) owns the live
+// drag math, this subsystem owns undo-push and height-grid reapply. ---
+
+bool UIH_BuildPaletteSubsystem::IsStampGripDragActive() const
+{
+	const AIH_TerrainStampActor* Stamp = SelectedTerrainStamp.Get();
+	return Stamp && Stamp->IsGripDragActive();
+}
+
+bool UIH_BuildPaletteSubsystem::TryFindTerrainStampGripAtScreen(
+	APlayerController* PC, const FVector2D& ScreenPos, EIHStampGripHandle& OutHandle, FVector& OutWorldPoint) const
+{
+	OutHandle = EIHStampGripHandle::None;
+	OutWorldPoint = FVector::ZeroVector;
+	AIH_TerrainStampActor* Stamp = SelectedTerrainStamp.Get();
+	if (!Stamp || !PC)
+	{
+		return false;
+	}
+
+	// Screen-space projection, not a terrain-surface raycast/3D-distance check - a grip can sit
+	// over empty space past a tapered mesh's silhouette (e.g. a corner grip on a dome-shaped
+	// stamp), where a world-space trace would miss it or hit ground far below instead.
+	constexpr float GripPickRadiusPx = 24.f;
+	float BestDistSq = GripPickRadiusPx * GripPickRadiusPx;
+	const TArray<EIHStampGripHandle>& Handles = Stamp->GetGripMarkerHandles();
+	const TArray<FVector>& Positions = Stamp->GetGripMarkerWorldPositions();
+	for (int32 Index = 0; Index < Positions.Num(); ++Index)
+	{
+		FVector2D GripScreenPos;
+		if (!PC->ProjectWorldLocationToScreen(Positions[Index], GripScreenPos))
+		{
+			continue;
+		}
+		const float DistSq = static_cast<float>(FVector2D::DistSquared(GripScreenPos, ScreenPos));
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			OutHandle = Handles[Index];
+			OutWorldPoint = Positions[Index];
+		}
+	}
+	return OutHandle != EIHStampGripHandle::None;
+}
+
+void UIH_BuildPaletteSubsystem::BeginStampGripDrag(APlayerController* PC, EIHStampGripHandle Handle, const FVector& WorldPoint, bool bSymmetric)
+{
+	AIH_TerrainStampActor* Stamp = SelectedTerrainStamp.Get();
+	if (!Stamp || Handle == EIHStampGripHandle::None)
+	{
+		return;
+	}
+	PendingGripDragStartTransform = Stamp->GetActorTransform();
+	GripDragPlaneOrigin = WorldPoint;
+	GripDragPlaneNormal = (PC && PC->PlayerCameraManager)
+		? PC->PlayerCameraManager->GetCameraRotation().Vector()
+		: FVector::ForwardVector;
+	Stamp->BeginGripDrag(Handle, WorldPoint, bSymmetric);
+}
+
+void UIH_BuildPaletteSubsystem::UpdateStampGripDrag(APlayerController* PC, const FVector2D& ScreenPos, float ScreenMouseDeltaY)
+{
+	AIH_TerrainStampActor* Stamp = SelectedTerrainStamp.Get();
+	AIH_Cube2FlyPlayerController* FlyPC = Cast<AIH_Cube2FlyPlayerController>(PC);
+	if (!Stamp || !Stamp->IsGripDragActive() || !FlyPC)
+	{
+		return;
+	}
+
+	// Top's math never reads WorldPointForXY (driven entirely by ScreenMouseDeltaY instead), so
+	// falling back to the plane origin itself when the ray-plane intersection is degenerate only
+	// matters for X/Y/corner handles.
+	FVector WorldPointForXY = GripDragPlaneOrigin;
+	FVector RayOrigin = FVector::ZeroVector;
+	FVector RayDirection = FVector::ZeroVector;
+	if (FlyPC->DeprojectScreenToWorldRay(ScreenPos, RayOrigin, RayDirection))
+	{
+		const double Denominator = FVector::DotProduct(RayDirection, GripDragPlaneNormal);
+		if (!FMath::IsNearlyZero(Denominator))
+		{
+			const double T = FVector::DotProduct(GripDragPlaneOrigin - RayOrigin, GripDragPlaneNormal) / Denominator;
+			if (T > 0.0)
+			{
+				WorldPointForXY = RayOrigin + RayDirection * T;
+			}
+		}
+	}
+
+	Stamp->UpdateGripDrag(WorldPointForXY, ScreenMouseDeltaY);
+}
+
+void UIH_BuildPaletteSubsystem::EndStampGripDrag()
+{
+	AIH_TerrainStampActor* Stamp = SelectedTerrainStamp.Get();
+	if (!Stamp || !Stamp->IsGripDragActive())
+	{
+		return;
+	}
+	Stamp->EndGripDrag();
+
+	// 2026-09-11: push an undo record only if the drag actually changed the transform - matches
+	// EndStampMoveDrag's own "skip a no-op click" guard.
+	if (!Stamp->GetActorTransform().Equals(PendingGripDragStartTransform, KINDA_SMALL_NUMBER))
+	{
+		FIHStampUndoRecord Record;
+		Record.ActionType = EIHStampUndoActionType::Transform;
+		Record.Stamp = Stamp;
+		Record.PreviousTransform = PendingGripDragStartTransform;
+		Record.PreviousDepthBelowSurfaceCm = Stamp->GetCurrentDepthBelowSurfaceCm();
+		PushStampUndoRecord(Record);
+	}
+
+	ApplySelectedTerrainStampTransform();
 }
 
 void UIH_BuildPaletteSubsystem::RotateSelectedTerrainStamp(const float DeltaDeg)
@@ -2255,6 +2731,18 @@ void UIH_BuildPaletteSubsystem::RotateSelectedTerrainStamp(const float DeltaDeg)
 	{
 		return;
 	}
+
+	// 2026-09-10: one undo step per discrete rotation call (each R-press or wheel-tick), matching
+	// the granularity DeltaDeg is already applied at.
+	{
+		FIHStampUndoRecord Record;
+		Record.ActionType = EIHStampUndoActionType::Transform;
+		Record.Stamp = Stamp;
+		Record.PreviousTransform = Stamp->GetActorTransform();
+		Record.PreviousDepthBelowSurfaceCm = Stamp->GetCurrentDepthBelowSurfaceCm();
+		PushStampUndoRecord(Record);
+	}
+
 	Stamp->StampRotationDeg = FMath::Fmod(Stamp->StampRotationDeg + DeltaDeg + 360.f, 360.f);
 	Stamp->SyncStampActorYaw();
 	Stamp->RefreshPreviewMesh();
@@ -2343,13 +2831,18 @@ void UIH_BuildPaletteSubsystem::ApplySelectedStampMouseWheel(APlayerController* 
 	using namespace IH_BuildPaletteTerrainStampManipulation;
 	const bool bShift = FlyPC->IsInputKeyDown(EKeys::LeftShift) || FlyPC->IsInputKeyDown(EKeys::RightShift);
 	const float Sign = WheelDelta > 0.f ? 1.f : -1.f;
+	// 2026-09-10: inverted to match the canonical IslandMesh convention (Shift+Wheel rotates -
+	// IslandShiftWheelRotateDeg, IH_Cube2FlyPlayerController.cpp) - previously the opposite way
+	// round (Shift=scale, plain=rotate). Plain-wheel scale is still inert for a static-mesh stamp
+	// (ScaleSelectedTerrainStampRadius only mutates RadiusKm, which nothing reads yet) - real scale-
+	// grip interaction is a separate follow-up round.
 	if (bShift)
 	{
-		ScaleSelectedTerrainStampRadius(Sign > 0.f ? 1.05f : 0.95f);
+		RotateSelectedTerrainStamp(Sign * TerrainStampWheelRotateDeg);
 	}
 	else
 	{
-		RotateSelectedTerrainStamp(Sign * TerrainStampWheelRotateDeg);
+		ScaleSelectedTerrainStampRadius(Sign > 0.f ? 1.05f : 0.95f);
 	}
 }
 
@@ -2362,11 +2855,29 @@ bool UIH_BuildPaletteSubsystem::TryRemoveSelectedTerrainStamp()
 	}
 
 	AIH_WB_IslandActor* Island = Stamp->GetTargetIsland();
+
+	// 2026-09-10: push a Delete undo record BEFORE destroying, capturing enough to respawn (StampId/
+	// transform/island) - one Ctrl+Z brings it back. Deliberately does NOT call
+	// ClearTerrainStampSelection() here (that flushes StampUndoStack, which would erase the record
+	// this just pushed before the player ever got to press Ctrl+Z) - a delete is a "deselect" that
+	// must still leave its own undo step reachable, unlike a normal click-away deselect.
+	{
+		FIHStampUndoRecord Record;
+		Record.ActionType = EIHStampUndoActionType::Delete;
+		Record.StampId = Stamp->GetStampId();
+		Record.PreviousTransform = Stamp->GetActorTransform();
+		Record.PreviousDepthBelowSurfaceCm = Stamp->GetCurrentDepthBelowSurfaceCm();
+		Record.TargetIsland = Island;
+		PushStampUndoRecord(Record);
+	}
+
 	if (Island)
 	{
 		Island->UnregisterTerrainStamp(Stamp);
 	}
-	ClearTerrainStampSelection();
+	Stamp->SetStampSelected(false);
+	SelectedTerrainStamp = nullptr;
+	bStampMoveDragActive = false;
 	Stamp->Destroy();
 
 #if !UE_BUILD_SHIPPING
@@ -2382,6 +2893,72 @@ bool UIH_BuildPaletteSubsystem::TryRemoveSelectedTerrainStamp()
 		Island->ReapplyAllTerrainStampsToHeightGrid();
 		LogTerrainStampReplayHeaderStub();
 	}
+	return true;
+}
+
+void UIH_BuildPaletteSubsystem::PushStampUndoRecord(const FIHStampUndoRecord& Record)
+{
+	if (StampUndoStack.Num() >= MaxStampUndoStackDepth)
+	{
+		StampUndoStack.RemoveAt(0);
+	}
+	StampUndoStack.Add(Record);
+}
+
+bool UIH_BuildPaletteSubsystem::UndoLastStampAction()
+{
+	if (StampUndoStack.Num() == 0)
+	{
+		return false;
+	}
+
+	const FIHStampUndoRecord Record = StampUndoStack.Pop();
+
+	if (Record.ActionType == EIHStampUndoActionType::Transform)
+	{
+		AIH_TerrainStampActor* Stamp = Record.Stamp.Get();
+		if (!Stamp)
+		{
+			return false;
+		}
+		Stamp->SetActorTransform(Record.PreviousTransform);
+		Stamp->SetCurrentDepthBelowSurfaceCm(Record.PreviousDepthBelowSurfaceCm);
+#if !UE_BUILD_SHIPPING
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Phase B2b stamp undo (Transform) — stamp=%s"),
+			*FIHTerrainStampCatalog::Get(Stamp->GetStampId()).RowName.ToString());
+#endif
+		return true;
+	}
+
+	// Delete record: respawn at the exact previous transform (not a fresh surface trace) and
+	// re-select it, preserving whatever else remains on the stack.
+	AIH_WB_IslandActor* Island = Record.TargetIsland.Get();
+	UWorld* World = Island ? Island->GetWorld() : nullptr;
+	if (!World)
+	{
+		return false;
+	}
+
+	AIH_TerrainStampActor* Respawned = SpawnBareStampActor(World, Island, Record.StampId);
+	if (!Respawned)
+	{
+		return false;
+	}
+	Respawned->SetActorTransform(Record.PreviousTransform);
+	Respawned->SetCurrentDepthBelowSurfaceCm(Record.PreviousDepthBelowSurfaceCm);
+	// A fresh drop's island-collision registration happens inside ApplyWorldSurfacePlacement - an
+	// undo-restore bypasses that (SetActorTransform must land at the exact previous pose, not
+	// re-snap to a fresh surface trace), so register explicitly here instead.
+	Respawned->RegisterWithIslandCollisionIfNeeded();
+	Island->ReapplyAllTerrainStampsToHeightGrid();
+	Island->SyncPlacedTerrainStampSurfaceAnchors();
+	SelectTerrainStamp(Respawned, /*bPreserveUndoStack=*/true);
+	LogTerrainStampReplayHeaderStub();
+#if !UE_BUILD_SHIPPING
+	UE_LOG(LogIH_WB_Demo004, Log, TEXT("Phase B2b stamp undo (Delete restore) — stamp=%s island=%d"),
+		*FIHTerrainStampCatalog::Get(Record.StampId).RowName.ToString(),
+		Island->GetTankIslandIndex());
+#endif
 	return true;
 }
 

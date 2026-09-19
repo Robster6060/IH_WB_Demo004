@@ -23,6 +23,7 @@
 #include "IH_P1C08_PlaceShipWidget.h"
 #include "IH_P1C08_MannequinWidget.h"
 #include "IH_P1C08_MannequinActor.h"
+#include "IH_P1C08_MannequinRegistrySubsystem.h"
 #include "Components/CapsuleComponent.h"
 #include "IH_P1C08_TopDownViewWidget.h"
 #include "IH_P1C07_MerchantmanShipActor.h"
@@ -611,17 +612,13 @@ void AIH_Cube2FlyPlayerController::HandleIslandSelectionChanged(int32 IslandInde
 
 void AIH_Cube2FlyPlayerController::BeginCameraFlyToIsland(int32 IslandIndex)
 {
-	if (IsViewportIslandSelectionBlocked())
-	{
-#if !UE_BUILD_SHIPPING
-		UE_LOG(
-			LogIH_WB_Demo004, Log,
-			TEXT("Phase island camera fly blocked — W fly-out open (index=%d)"),
-			IslandIndex);
-#endif
-		return;
-	}
-
+	// 2026-09-18 fix: this function's only callers are both inside UIH_P1C08_IslandNavWidget::SelectRow
+	// (a deliberate "fly to this island" click on an Island Nav LIST row) - it is not a 3D-viewport
+	// actor-selection action, so it must never be subject to IsViewportIslandSelectionBlocked() (the
+	// GWBCD tab-exclusivity gate that governs whether an Island ACTOR is selectable in the world). That
+	// gate was incorrectly silently swallowing every Nav-row fly-to click made while any tab was open -
+	// per explicit user direction, Nav-row fly-to must always work regardless of Top Down/Regular View
+	// or G/W/B/C/D tab state.
 	APawn* ViewPawn = GetPawn();
 	if (!ViewPawn)
 	{
@@ -904,7 +901,9 @@ void AIH_Cube2FlyPlayerController::BindFlyMovementKeys()
 	BindFlyKey(EKeys::E);
 	BindFlyKey(EKeys::Q);
 	BindFlyKey(EKeys::SpaceBar);
-	BindFlyKey(EKeys::LeftControl);
+	// 2026-09-18: Ctrl delinked from camera descend (user request) - it's now a pure modifier key
+	// (e.g. Ctrl+grip-pull = proportional stamp extension) and holding it for that purpose was
+	// incidentally also dropping the camera. Q/PageDown remain as descend.
 	BindFlyKey(EKeys::PageUp);
 	BindFlyKey(EKeys::PageDown);
 }
@@ -940,6 +939,22 @@ void AIH_Cube2FlyPlayerController::BindGlobalHUDKeys()
 	}
 
 	InputComponent->BindKey(EKeys::G, IE_Pressed, this, &AIH_Cube2FlyPlayerController::HandleBuildPaletteGridTogglePressed);
+	InputComponent->BindKey(FInputChord(EKeys::Z, /*bShift=*/false, /*bCtrl=*/true, /*bAlt=*/false, /*bCmd=*/false),
+		IE_Pressed, this, &AIH_Cube2FlyPlayerController::HandleStampUndoPressed);
+}
+
+void AIH_Cube2FlyPlayerController::HandleStampUndoPressed()
+{
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		if (UIH_BuildPaletteSubsystem* BuildPalette = GI->GetSubsystem<UIH_BuildPaletteSubsystem>())
+		{
+			if (BuildPalette->HasSelectedTerrainStamp() && BuildPalette->IsWorldStampEditModeActive())
+			{
+				BuildPalette->UndoLastStampAction();
+			}
+		}
+	}
 }
 
 bool AIH_Cube2FlyPlayerController::IsKeyDownAnywhere(FKey Key) const
@@ -1184,7 +1199,7 @@ void AIH_Cube2FlyPlayerController::ApplyKeyboardFlyMovement(float DeltaTime)
 	if (IsFlyKeyDown(EKeys::D) || IsFlyKeyDown(EKeys::Right)) Wish += RightXY;
 	if (IsFlyKeyDown(EKeys::A) || IsFlyKeyDown(EKeys::Left)) Wish -= RightXY;
 	if (IsFlyKeyDown(EKeys::E) || IsFlyKeyDown(EKeys::SpaceBar) || IsFlyKeyDown(EKeys::PageUp)) Wish += FVector::UpVector;
-	if (IsFlyKeyDown(EKeys::Q) || IsFlyKeyDown(EKeys::LeftControl) || IsFlyKeyDown(EKeys::PageDown)) Wish -= FVector::UpVector;
+	if (IsFlyKeyDown(EKeys::Q) || IsFlyKeyDown(EKeys::PageDown)) Wish -= FVector::UpVector;
 	if (!Wish.IsNearlyZero(1e-4f))
 	{
 		FVector Offset = Wish.GetSafeNormal() * KeyboardFlySpeedCmPerSec * DeltaTime;
@@ -1443,6 +1458,11 @@ void AIH_Cube2FlyPlayerController::CancelActiveHUDKeyboardFocus()
 	}
 }
 
+bool AIH_Cube2FlyPlayerController::IsTopDownViewActive() const
+{
+	return TopDownViewWidget && TopDownViewWidget->IsTopDownActive();
+}
+
 void AIH_Cube2FlyPlayerController::HandleBuildPalettePointerPress(const FVector2D& CursorAbsolute)
 {
 	UGameInstance* GI = GetGameInstance();
@@ -1455,12 +1475,26 @@ void AIH_Cube2FlyPlayerController::HandleBuildPalettePointerPress(const FVector2
 	BuildPalette->EnsureBuildPaletteReady(this);
 	if (!BuildPalette->IsTabStripVisible())
 	{
+		// 2026-09-18 diag: investigating "D&D doesn't work in Top Down View" - gated to avoid
+		// spamming Regular View, where this path is never expected to matter.
+		if (IsTopDownViewActive())
+		{
+			UE_LOG(LogIH_WB_Demo004, Warning,
+				TEXT("HandleBuildPalettePointerPress DIAG: bailed - tab strip not visible (topDown=1)"));
+		}
 		return;
 	}
 
 	if (UIH_BuildPaletteHostWidget* PaletteWidget = BuildPalette->GetBuildPaletteWidget())
 	{
-		if (PaletteWidget->HandleScreenPointerDown(CursorAbsolute))
+		const bool bHandled = PaletteWidget->HandleScreenPointerDown(CursorAbsolute);
+		if (IsTopDownViewActive())
+		{
+			UE_LOG(LogIH_WB_Demo004, Warning,
+				TEXT("HandleBuildPalettePointerPress DIAG: cursor=(%.0f,%.0f) handled=%d (topDown=1)"),
+				CursorAbsolute.X, CursorAbsolute.Y, bHandled ? 1 : 0);
+		}
+		if (bHandled)
 		{
 			bLeftMouseConsumedByHUDPanel = true;
 			if (BuildPalette->IsDragActive())
@@ -1470,6 +1504,11 @@ void AIH_Cube2FlyPlayerController::HandleBuildPalettePointerPress(const FVector2
 			}
 			return;
 		}
+	}
+	else if (IsTopDownViewActive())
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("HandleBuildPalettePointerPress DIAG: bailed - GetBuildPaletteWidget() null (topDown=1)"));
 	}
 }
 
@@ -1573,6 +1612,13 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 		{
 			TownGrid->ApplyWheelYaw(Wheel);
 		}
+		else if (AIH_StructurePlacementActor* Structure = GetSelectedStructurePlacement())
+		{
+			// 2026-09-14: matches Town Grid's own precedent just above - plain wheel rotates the
+			// selected object, no Shift required (the chart lists "Shift+Wheel" but Town Grid's own
+			// already-working implementation never actually checks for it).
+			Structure->ApplyYawStep(Wheel > 0.f ? StructureWheelRotateDeg : -StructureWheelRotateDeg);
+		}
 		else if (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift))
 		{
 			bool bRotatedIsland = false;
@@ -1659,6 +1705,20 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 	{
 		MouseDragDelta = FVector2D::ZeroVector;
 	}
+
+	// 2026-09-14 fix: Shift+RMB append (Ship AND Mannequin move orders) never once succeeded this
+	// session per Saved/Logs (30/30 logged orders came back "replace", zero "append") - a fresh
+	// IsInputKeyDown(Shift) poll taken at the exact mouse-up frame is fragile against ordinary human
+	// timing (releasing Shift a beat before/after the mouse button). Track whether Shift was held at
+	// ANY point during this RMB press-hold-release cycle instead, and use that at release time.
+	if (bRightMouseJustPressed)
+	{
+		bShiftHeldDuringRightMouseHold = false;
+	}
+	if (bRightMouse && (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift)))
+	{
+		bShiftHeldDuringRightMouseHold = true;
+	}
 	if (bRightMouseJustPressed && bHasViewportMouse)
 	{
 		RightMouseDragStart = ViewportCur;
@@ -1677,6 +1737,20 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 	if (bRightMouseJustReleased && bHasViewportMouse && bShipsSelected)
 	{
 		HandleRightMouseReleaseForShipOrders(ViewportCur);
+	}
+
+	bool bMannequinsSelected = false;
+	if (UGameInstance* GIForMannequins = GetGameInstance())
+	{
+		if (UIH_P1C08_MannequinRegistrySubsystem* MReg =
+				GIForMannequins->GetSubsystem<UIH_P1C08_MannequinRegistrySubsystem>())
+		{
+			bMannequinsSelected = MReg->GetSelectedMannequins().Num() > 0;
+		}
+	}
+	if (bRightMouseJustReleased && bHasViewportMouse && bMannequinsSelected)
+	{
+		HandleRightMouseReleaseForMannequinOrders(ViewportCur);
 	}
 
 	if (WasInputKeyJustPressed(EKeys::Escape))
@@ -1747,7 +1821,14 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 	}
 
 	// TW-style: while commandable units selected, RMB is orders-only — suspend camera look.
-	const bool bAllowRmbLook = !bShipsSelected;
+	// 2026-09-14 fix: this only ever checked Ships, never Mannequins - so with Mannequins selected,
+	// RMB still drove free-look camera rotation AND issued move orders on release. Any ordinary
+	// camera glance-adjustment (small RMB drag, well under DragSelectThresholdPx) counted as a
+	// "short click" on release and silently re-issued a fresh, non-appended move order - wiping out
+	// whatever breadcrumb queue was in progress. Confirmed via log: a flood of CommandWalkTo calls
+	// with continuously drifting coordinates and none of them going through EnqueueWalkWaypoint,
+	// meaning every one of them was a plain replace order, not a deliberate Shift+RMB waypoint click.
+	const bool bAllowRmbLook = !bShipsSelected && !bMannequinsSelected;
 
 	if (bAllowRmbLook && bRightMouse && !bMouseLookActive)
 	{
@@ -1825,6 +1906,15 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 		bHUDSliderPointerCapture = false;
 		bBuildPalettePointerCapture = false;
 		bBuildPaletteDragFromPalette = false;
+		// 2026-09-18 defensive fix: every other pointer-capture flag on a fresh press is reset here,
+		// but these two weren't - if a prior grip/move drag ever left one stuck true without a
+		// matching release (e.g. focus loss mid-drag), it would silently block Shift+Drag-relocate
+		// (and grip-drag) from ever starting again this session, with no visible symptom, since the
+		// move-drag branch below explicitly requires !bStampGripPointerCapture. A genuinely active
+		// drag isn't affected - BeginStampMoveDrag/BeginStampGripDrag are called fresh below whenever
+		// this same press actually finds a valid target.
+		bStampGripPointerCapture = false;
+		bStampMovePointerCapture = false;
 
 		HandleBuildPalettePointerPress(CursorAbsolute);
 
@@ -1842,8 +1932,31 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 
 		if (!bLeftMouseConsumedByHUDPanel && !bLeftMouseStartedOverMinimap && !bMinimapPointerCapture)
 		{
+			// Stage 12b (2026-09-11): bounding-box scale grips are their own widget layer, checked
+			// BEFORE the Shift+move-drag block below. Ctrl held at grab time decides
+			// one-sided-vs-symmetric for the whole drag (not re-polled mid-drag).
+			// 2026-09-18 fix (user-confirmed via log): grips used to be checked regardless of Shift,
+			// "no Shift required to grab a grip" - but log evidence showed EVERY Shift+click attempt
+			// at Top-Down zoom landing on some grip handle (1,5,2,4,3 - a different one each time),
+			// so Shift+Drag-relocate could never reach the move-drag block below at all. Shift now
+			// always means relocate; grips are only grabbable via a plain (non-Shift) click. Ctrl
+			// stays completely untouched as the separate proportional-resize modifier for grips.
 			const bool bShiftDown = IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
-			if (bShiftDown && BuildPalette)
+			if (!bShiftDown && BuildPalette && BuildPalette->HasSelectedTerrainStamp()
+				&& BuildPalette->IsWorldStampEditModeActive())
+			{
+				EIHStampGripHandle HitGrip = EIHStampGripHandle::None;
+				FVector GripWorldPoint = FVector::ZeroVector;
+				if (BuildPalette->TryFindTerrainStampGripAtScreen(this, ViewportCur, HitGrip, GripWorldPoint))
+				{
+					const bool bCtrlDown = IsInputKeyDown(EKeys::LeftControl) || IsInputKeyDown(EKeys::RightControl);
+					BuildPalette->BeginStampGripDrag(this, HitGrip, GripWorldPoint, bCtrlDown);
+					bStampGripPointerCapture = true;
+					bLeftMouseConsumedByHUDPanel = true;
+				}
+			}
+
+			if (bShiftDown && BuildPalette && !bStampGripPointerCapture)
 			{
 				AIH_TerrainStampActor* HitStamp = nullptr;
 				if (BuildPalette->TryFindTerrainStampAtScreen(this, ViewportCur, HitStamp) && HitStamp)
@@ -1854,14 +1967,40 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 				}
 			}
 
+			// 2026-09-14: Structure (B) Shift+Drag relocate - mirrors the stamp block just above,
+			// only reachable while the Structure is already selected (matches every other type's own
+			// "must be selected before you can transform it" convention).
+			if (bShiftDown && !bStampMovePointerCapture)
+			{
+				if (AIH_StructurePlacementActor* Structure = GetSelectedStructurePlacement())
+				{
+					FVector StructureWorldPoint = FVector::ZeroVector;
+					if (TryTraceTerrainAtScreen(ViewportCur, StructureWorldPoint))
+					{
+						Structure->BeginMoveDrag(StructureWorldPoint);
+						bStructureMovePointerCapture = true;
+						bLeftMouseConsumedByHUDPanel = true;
+					}
+				}
+			}
+
 			int32 HitIslandIndex = INDEX_NONE;
-			if (bShiftDown && !bStampMovePointerCapture && !IsViewportIslandSelectionBlocked())
+			// 2026-09-18 fix: "Island Nav fly-to sometimes agnostic to click" - TryResolveIslandIndexAtScreen
+			// does a 3D world raycast through the cursor's screen point, with no awareness of 2D HUD
+			// panels drawn over the viewport. A Shift+click on an Island Nav row (a semi-transparent
+			// panel with real island terrain rendered behind it) could hit that terrain and claim the
+			// click for island-drag before Island Nav's own row-click handler further down ever ran.
+			// The existing IsScreenPointOverInteractiveHUDPanel check was only consulted in the fallback
+			// branch below (raycast miss) - gating the whole block on it up front makes "any interactive
+			// HUD panel wins over world-space actions" hold consistently, matching every other panel here.
+			if (bShiftDown && !bStampMovePointerCapture && !IsViewportIslandSelectionBlocked()
+				&& !IsScreenPointOverInteractiveHUDPanel(CursorAbsolute))
 			{
 				if (!TryResolveIslandIndexAtScreen(ViewportCur, HitIslandIndex))
 				{
 					HitIslandIndex = INDEX_NONE;
 				}
-				if (HitIslandIndex == INDEX_NONE && !IsScreenPointOverInteractiveHUDPanel(CursorAbsolute))
+				if (HitIslandIndex == INDEX_NONE)
 				{
 					if (UGameInstance* GI = GetGameInstance())
 					{
@@ -2078,18 +2217,30 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 							}
 						}
 
-						if (HitTownGrid)
+						// 2026-09-14 fix: this used to call SelectTownGridManager(HitTownGrid)
+						// unconditionally on every mouse-DOWN, which selected a grid on the very
+						// first click regardless of the double-click gate added at mouse-UP
+						// (HandleLeftMouseRelease) - the release-time gate never got a chance to
+						// matter since the grid was already selected by the time it ran. Grip/move
+						// drag now require the grid to ALREADY be the selected one (matches every
+						// other selectable type's own "must be selected before you can transform
+						// it" convention); actual selection only happens via the double-click path.
+						if (HitTownGrid && SelectedTownGridManager.Get() == HitTownGrid)
 						{
-							SelectTownGridManager(HitTownGrid);
-
 							EIHTownGridGripHandle Grip = EIHTownGridGripHandle::None;
 							if (HitTownGrid->TryHitGripAtWorld(WorldPoint, Grip))
 							{
 								HitTownGrid->BeginGripDrag(Grip, WorldPoint);
 								bStartedTownGridInteraction = true;
 							}
-							else if (HitTownGrid->ContainsWorldPointXY(WorldPoint))
+							else if (HitTownGrid->ContainsWorldPointXY(WorldPoint)
+								&& (IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift)))
 							{
+								// 2026-09-14 fix: relocate is canonically Shift+Drag - this branch had
+								// no Shift check at all, so ANY plain click-and-tiny-jitter on an
+								// already-selected grid (not hitting a grip) silently nudged its
+								// position via BeginMoveDrag/UpdateMoveDrag, reading as "click anywhere
+								// relocates it" instead of deselecting.
 								HitTownGrid->BeginMoveDrag(WorldPoint);
 								bTownGridMovePointerCapture = true;
 								bStartedTownGridInteraction = true;
@@ -2154,7 +2305,52 @@ void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 
 	if (bStampMovePointerCapture && bLeftMouseNow && BuildPalette)
 	{
-		BuildPalette->UpdateStampMoveDrag(this, ViewportCur);
+		// 2026-09-18 fix: same as Town Grid's (~line 5378) and Structure's (~line 2274) own fix -
+		// relocate is Shift+Drag, but this only ever checked Shift once, at grab time. Releasing
+		// Shift mid-drag (very natural a beat before releasing the mouse button) let the stamp keep
+		// tracking the cursor all the way to wherever the mouse was finally released, which read as
+		// "clicking elsewhere to deselect jumped the stamp there instead." Ending the drag the instant
+		// Shift lifts makes the stamp simply stay wherever it was when you let go of Shift, and the
+		// subsequent mouse-up is then a normal, separate click.
+		if (!IsInputKeyDown(EKeys::LeftShift) && !IsInputKeyDown(EKeys::RightShift))
+		{
+			BuildPalette->EndStampMoveDrag();
+			bStampMovePointerCapture = false;
+		}
+		else
+		{
+			// Total vertical distance since mouse-down (not the per-tick MouseDragDelta.Y the grips
+			// use) - sink depth is re-derived fresh from this every tick, never accumulated, so it
+			// can't drift from per-frame mouse jitter (see UIH_BuildPaletteSubsystem::UpdateStampMoveDrag).
+			BuildPalette->UpdateStampMoveDrag(this, ViewportCur, ViewportCur.Y - LeftMouseDragStart.Y);
+		}
+	}
+
+	if (bStampGripPointerCapture && bLeftMouseNow && BuildPalette)
+	{
+		BuildPalette->UpdateStampGripDrag(this, ViewportCur, MouseDragDelta.Y);
+	}
+
+	if (bStructureMovePointerCapture && bLeftMouseNow)
+	{
+		if (AIH_StructurePlacementActor* Structure = GetSelectedStructurePlacement())
+		{
+			// 2026-09-14 fix: same as Town Grid's own fix just above - end the drag the instant
+			// Shift lifts instead of tracking the cursor all the way to the eventual mouse-up.
+			if (!IsInputKeyDown(EKeys::LeftShift) && !IsInputKeyDown(EKeys::RightShift))
+			{
+				Structure->EndMoveDrag();
+				bStructureMovePointerCapture = false;
+			}
+			else
+			{
+				FVector StructureWorldPoint = FVector::ZeroVector;
+				if (TryTraceTerrainAtScreen(ViewportCur, StructureWorldPoint))
+				{
+					Structure->UpdateMoveDrag(StructureWorldPoint);
+				}
+			}
+		}
 	}
 
 	if (bIslandDragActive)
@@ -2383,18 +2579,10 @@ AActor* AIH_Cube2FlyPlayerController::FindNearestRegisteredShipAtScreen(
 	return Best;
 }
 
-bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& ScreenPos)
+bool AIH_Cube2FlyPlayerController::TryResolveShipPlacementWorldPoint(const FVector2D& ScreenPos, FVector& OutPoint) const
 {
-#if UE_BUILD_SHIPPING
-	return false;
-#else
-	if (!PlaceShipWidget || !PlaceShipWidget->IsPlaceModeActive())
-	{
-		return false;
-	}
-
 	UWorld* World = GetWorld();
-	UGameInstance* GI = GetGameInstance();
+	const UGameInstance* GI = GetGameInstance();
 	if (!World)
 	{
 		return false;
@@ -2461,7 +2649,6 @@ bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& 
 
 	if (!bFoundCandidate)
 	{
-		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Place Ship: resolve failed — keep Click Water mode"));
 		return false;
 	}
 
@@ -2469,39 +2656,95 @@ bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& 
 	// the click, for the "ship spawns out of frame" regression — screen input, which resolution
 	// path fired, the raw (pre-ResolveOpenOceanMoveDestination) hit point, and the final candidate.
 	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("Place Ship DIAG: screenPos=(%.0f,%.0f) path=%s rawHit=(%.0f,%.0f,%.0f) candidate=(%.0f,%.0f,%.0f)"),
+		TEXT("Ship placement DIAG: screenPos=(%.0f,%.0f) path=%s rawHit=(%.0f,%.0f,%.0f) candidate=(%.0f,%.0f,%.0f)"),
 		ScreenPos.X, ScreenPos.Y, PathDiag,
 		RawHitPointDiag.X, RawHitPointDiag.Y, RawHitPointDiag.Z,
 		CandidatePoint.X, CandidatePoint.Y, CandidatePoint.Z);
 
+	OutPoint = CandidatePoint;
+	return true;
+}
+
+AIH_P1C07_MerchantmanShipActor* AIH_Cube2FlyPlayerController::SpawnAndSelectMerchantmanAt(const FVector& SpawnPoint)
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+
 	const float WaterlineOffsetCm =
 		GetDefault<AIH_P1C07_MerchantmanShipActor>()->DefaultWaterlineOffsetZCm;
-	const FVector ShipLoc(CandidatePoint.X, CandidatePoint.Y, CandidatePoint.Z + WaterlineOffsetCm);
+	const FVector ShipLoc(SpawnPoint.X, SpawnPoint.Y, SpawnPoint.Z + WaterlineOffsetCm);
 	FActorSpawnParameters Params;
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 	AIH_P1C07_MerchantmanShipActor* Ship = World->SpawnActor<AIH_P1C07_MerchantmanShipActor>(
 		AIH_P1C07_MerchantmanShipActor::StaticClass(), ShipLoc, FRotator::ZeroRotator, Params);
 	if (!Ship)
 	{
-		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Place Ship: SpawnActor failed"));
-		return false;
+		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("Ship placement: SpawnActor failed"));
+		return nullptr;
 	}
 #if WITH_EDITOR
 	Ship->SetActorLabel(TEXT("P1C07_Merchantman_Placed"));
 #endif
-	if (UIH_P1C07_ShipRegistrySubsystem* Registry =
-			GI ? GI->GetSubsystem<UIH_P1C07_ShipRegistrySubsystem>() : nullptr)
+	if (UGameInstance* GI = GetGameInstance())
 	{
-		TArray<AActor*> Sel;
-		Sel.Add(Ship);
-		Registry->SetSelection(Sel);
+		if (UIH_P1C07_ShipRegistrySubsystem* Registry = GI->GetSubsystem<UIH_P1C07_ShipRegistrySubsystem>())
+		{
+			TArray<AActor*> Sel;
+			Sel.Add(Ship);
+			Registry->SetSelection(Sel);
+		}
 	}
-	PlaceShipWidget->ClearPlaceMode();
 	UE_LOG(
 		LogIH_WB_Demo004, Log,
-		TEXT("Place Ship: Merchantman at (%.0f,%.0f,%.0f)"),
+		TEXT("Ship placement: Merchantman at (%.0f,%.0f,%.0f)"),
 		ShipLoc.X, ShipLoc.Y, ShipLoc.Z);
+	return Ship;
+}
+
+bool AIH_Cube2FlyPlayerController::TryPlaceMerchantmanAtScreen(const FVector2D& ScreenPos)
+{
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	if (!PlaceShipWidget || !PlaceShipWidget->IsPlaceModeActive())
+	{
+		return false;
+	}
+
+	FVector CandidatePoint;
+	if (!TryResolveShipPlacementWorldPoint(ScreenPos, CandidatePoint))
+	{
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Place Ship: resolve failed — keep Click Water mode"));
+		return false;
+	}
+
+	if (!SpawnAndSelectMerchantmanAt(CandidatePoint))
+	{
+		return false;
+	}
+
+	PlaceShipWidget->ClearPlaceMode();
 	return true;
+#endif
+}
+
+bool AIH_Cube2FlyPlayerController::TrySpawnMerchantmanAtScreen(const FVector2D& ScreenPos)
+{
+#if UE_BUILD_SHIPPING
+	return false;
+#else
+	// 2026-09-13: Convey (C) flyout dev tile - identical placement to Place Ship (shared helpers
+	// above), just triggered from a drag-and-drop tile instead of the top-level Place Ship button.
+	FVector CandidatePoint;
+	if (!TryResolveShipPlacementWorldPoint(ScreenPos, CandidatePoint))
+	{
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Convey tile: ship placement resolve failed"));
+		return false;
+	}
+	return SpawnAndSelectMerchantmanAt(CandidatePoint) != nullptr;
 #endif
 }
 
@@ -2699,8 +2942,7 @@ void AIH_Cube2FlyPlayerController::HandleRightMouseReleaseForShipOrders(const FV
 		return;
 	}
 
-	const bool bAppend =
-		IsInputKeyDown(EKeys::LeftShift) || IsInputKeyDown(EKeys::RightShift);
+	const bool bAppend = bShiftHeldDuringRightMouseHold;
 	if (TryIssueMoveOrderAtScreen(ViewportPick, Registry, bAppend))
 	{
 #if !UE_BUILD_SHIPPING
@@ -2716,6 +2958,125 @@ void AIH_Cube2FlyPlayerController::HandleRightMouseReleaseForShipOrders(const FV
 		UE_LOG(LogIH_WB_Demo004, Log,
 			TEXT("Phase ship move order — RMB failed (selection kept) selected=%d"),
 			Registry->GetSelectedShips().Num());
+#endif
+	}
+}
+
+AActor* AIH_Cube2FlyPlayerController::TraceSelectableMannequinAtScreen(const FVector2D& ScreenPos) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	FVector WorldOrigin;
+	FVector WorldDirection;
+	if (!DeprojectScreenToWorldRay(ScreenPos, WorldOrigin, WorldDirection))
+	{
+		return nullptr;
+	}
+
+	const FVector TraceEnd = WorldOrigin + WorldDirection * 5.0e8f;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(P1C08MannequinClick), true, this);
+
+	TArray<FHitResult> Hits;
+	if (World->LineTraceMultiByChannel(Hits, WorldOrigin, TraceEnd, ECC_Visibility, Params))
+	{
+		Hits.Sort([](const FHitResult& A, const FHitResult& B) { return A.Distance < B.Distance; });
+		for (const FHitResult& Hit : Hits)
+		{
+			if (AActor* HitActor = Hit.GetActor())
+			{
+				if (HitActor->Implements<UIH_P1C08_SelectableMannequin>())
+				{
+					return HitActor;
+				}
+			}
+		}
+	}
+
+	return nullptr;
+}
+
+bool AIH_Cube2FlyPlayerController::TryIssueMannequinMoveOrderAtScreen(
+	const FVector2D& ScreenPos,
+	UIH_P1C08_MannequinRegistrySubsystem* Registry,
+	const bool bAppendWaypoint)
+{
+	if (!Registry || Registry->GetSelectedMannequins().Num() == 0)
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	// Same multi-hit-trace + IslandActorTag technique TryPlaceMannequinAtScreen already uses for
+	// click-to-place - land destination resolution, the mirror image of the ship version's
+	// open-water resolution.
+	FVector WorldOrigin;
+	FVector WorldDirection;
+	FVector CandidatePoint = FVector::ZeroVector;
+	bool bFoundCandidate = false;
+	if (DeprojectScreenToWorldRay(ScreenPos, WorldOrigin, WorldDirection))
+	{
+		const FVector TraceEnd = WorldOrigin + WorldDirection * 5.0e8f;
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(P1C08MannequinMoveOrder), true, this);
+		TArray<FHitResult> Hits;
+		World->LineTraceMultiByChannel(Hits, WorldOrigin, TraceEnd, ECC_Visibility, Params);
+		Hits.Sort([](const FHitResult& A, const FHitResult& B) { return A.Distance < B.Distance; });
+		for (const FHitResult& Hit : Hits)
+		{
+			if (Hit.GetActor() && Hit.GetActor()->ActorHasTag(UIH_P1C07_IslandCollisionSubsystem::IslandActorTag))
+			{
+				CandidatePoint = Hit.ImpactPoint;
+				bFoundCandidate = true;
+				break;
+			}
+		}
+	}
+
+	if (!bFoundCandidate)
+	{
+		bFoundCandidate = TryGetWorldPointOnWaterPlane(ScreenPos, CandidatePoint);
+	}
+
+	if (!bFoundCandidate)
+	{
+		return false;
+	}
+
+	return Registry->IssueMoveOrderToSelection(this, CandidatePoint, bAppendWaypoint);
+}
+
+void AIH_Cube2FlyPlayerController::HandleRightMouseReleaseForMannequinOrders(const FVector2D& ViewportPick)
+{
+	UGameInstance* GI = GetGameInstance();
+	UIH_P1C08_MannequinRegistrySubsystem* Registry =
+		GI ? GI->GetSubsystem<UIH_P1C08_MannequinRegistrySubsystem>() : nullptr;
+	if (!Registry || Registry->GetSelectedMannequins().Num() == 0)
+	{
+		return;
+	}
+
+	const float DragDist = FVector2D::Distance(ViewportPick, RightMouseDragStart);
+	if (DragDist >= DragSelectThresholdPx)
+	{
+		return;
+	}
+
+	const bool bAppend = bShiftHeldDuringRightMouseHold;
+	if (TryIssueMannequinMoveOrderAtScreen(ViewportPick, Registry, bAppend))
+	{
+#if !UE_BUILD_SHIPPING
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("Phase mannequin move order — RMB %s selected=%d"),
+			bAppend ? TEXT("append") : TEXT("replace"),
+			Registry->GetSelectedMannequins().Num());
 #endif
 	}
 }
@@ -2954,6 +3315,12 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 	}
 	bTownGridMovePointerCapture = false;
 
+	if (AIH_StructurePlacementActor* Structure = GetSelectedStructurePlacement())
+	{
+		Structure->EndMoveDrag();
+	}
+	bStructureMovePointerCapture = false;
+
 	if (bStampMovePointerCapture)
 	{
 		if (GI)
@@ -2964,6 +3331,18 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 			}
 		}
 		bStampMovePointerCapture = false;
+	}
+
+	if (bStampGripPointerCapture)
+	{
+		if (GI)
+		{
+			if (UIH_BuildPaletteSubsystem* BuildPalette = GI->GetSubsystem<UIH_BuildPaletteSubsystem>())
+			{
+				BuildPalette->EndStampGripDrag();
+			}
+		}
+		bStampGripPointerCapture = false;
 	}
 
 	bBuildPalettePointerCapture = false;
@@ -2980,16 +3359,34 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 		}
 		if (GI)
 		{
+			const UIH_BuildPaletteSubsystem* BoxSelectGate = GI->GetSubsystem<UIH_BuildPaletteSubsystem>();
 			if (UIH_P1C07_ShipRegistrySubsystem* Registry = GI->GetSubsystem<UIH_P1C07_ShipRegistrySubsystem>())
 			{
-				// LMB drag = replace box; Shift+drag = additive union (IH select/move canon).
-				Registry->SelectShipsInScreenRect(this, LeftMouseDragStart, ViewportPick, bShiftSelect);
+				// LMB drag = replace box; Shift+drag = additive union (IH select/move canon). Gated
+				// to Convey (C) being open, matching the click-select gate below.
+				if (BoxSelectGate && BoxSelectGate->IsCategorySelectableNow(EIHBuildPaletteTab::Convey))
+				{
+					Registry->SelectShipsInScreenRect(this, LeftMouseDragStart, ViewportPick, bShiftSelect);
+				}
+			}
+			// Mannequin troop movement - same box-select convention, a parallel/independent registry,
+			// deliberately left ungated (DEV-only tool, outside the GWBCD hierarchy).
+			if (UIH_P1C08_MannequinRegistrySubsystem* MRegistry = GI->GetSubsystem<UIH_P1C08_MannequinRegistrySubsystem>())
+			{
+				MRegistry->SelectMannequinsInScreenRect(this, LeftMouseDragStart, ViewportPick, bShiftSelect);
 			}
 		}
 		return;
 	}
 
 	const bool bWorldStampEditMode = IsViewportIslandSelectionBlocked();
+
+	// Selectable-actor hierarchy (2026-09-13): Ship and Town Grid pick below are gated on their
+	// own GWBCD tab being the one currently open - Mannequin is deliberately left ungated (DEV-only
+	// tool, outside the hierarchy). A gated-off pick just skips its block and falls through to
+	// whatever the "nothing selectable hit" path below already does (deselect current selection),
+	// per the "blocked click passes through to background" canon - no separate no-op branch needed.
+	UIH_BuildPaletteSubsystem* GatingPalette = GI ? GI->GetSubsystem<UIH_BuildPaletteSubsystem>() : nullptr;
 
 #if !UE_BUILD_SHIPPING
 	// Place Ship: consume click only on successful spawn; fail falls through so sail still works.
@@ -3014,8 +3411,8 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 		? GI->GetSubsystem<UIH_P1C07_ShipRegistrySubsystem>()
 		: nullptr;
 
-	// Ship pick (before island / move).
-	if (Registry)
+	// Ship pick (before island / move) - gated to Convey (C) being the open tab.
+	if (Registry && GatingPalette && GatingPalette->IsCategorySelectableNow(EIHBuildPaletteTab::Convey))
 	{
 		AActor* HitShip = TraceSelectableShipAtScreen(ViewportPick);
 		if (!HitShip)
@@ -3024,22 +3421,74 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 		}
 		if (HitShip)
 		{
-			if (bShiftSelect)
+			// 2026-09-13: select gesture standardized to Double-Click (matches Island/Terrain Stamp's
+			// own GetRealTimeSeconds()-based pattern - immune to the Game Speed slider's dilation). A
+			// single click just arms the tracking and consumes the click, same as Terrain Stamp's own
+			// TryHandleStampSelectionClickAtViewport - it does not fall through to deselect anything.
+			const float Now = GetWorld()->GetRealTimeSeconds();
+			const bool bDoubleClick = HitShip == LastClickedShip.Get()
+				&& (Now - LastShipClickTimeSec) <= ActorDoubleClickWindowSec;
+			LastClickedShip = HitShip;
+			LastShipClickTimeSec = Now;
+
+			if (bDoubleClick)
 			{
-				Registry->ToggleSelectShip(HitShip);
-			}
-			else
-			{
-				TArray<AActor*> Sel;
-				Sel.Add(HitShip);
-				Registry->SetSelection(Sel);
-			}
+				if (bShiftSelect)
+				{
+					Registry->ToggleSelectShip(HitShip);
+				}
+				else
+				{
+					TArray<AActor*> Sel;
+					Sel.Add(HitShip);
+					Registry->SetSelection(Sel);
+				}
 #if !UE_BUILD_SHIPPING
-			UE_LOG(
-				LogIH_WB_Demo004, Log,
-				TEXT("Phase ship select — actor=%s selectedCount=%d shift=%d"),
-				*HitShip->GetName(), Registry->GetSelectedShips().Num(), bShiftSelect ? 1 : 0);
+				UE_LOG(
+					LogIH_WB_Demo004, Log,
+					TEXT("Phase ship select — actor=%s selectedCount=%d shift=%d"),
+					*HitShip->GetName(), Registry->GetSelectedShips().Num(), bShiftSelect ? 1 : 0);
 #endif
+			}
+			return;
+		}
+	}
+
+	// Mannequin pick (same priority slot as ship pick - before island/move) - a parallel/independent
+	// registry, never touching the ship code above.
+	if (UIH_P1C08_MannequinRegistrySubsystem* MRegistry = GI
+		? GI->GetSubsystem<UIH_P1C08_MannequinRegistrySubsystem>()
+		: nullptr)
+	{
+		if (AActor* HitMannequin = TraceSelectableMannequinAtScreen(ViewportPick))
+		{
+			// Same Double-Click standardization as Ship (mirrors Ship's own select code 1:1, per
+			// this system's existing "mirror Ship exactly" design intent).
+			const float Now = GetWorld()->GetRealTimeSeconds();
+			const bool bDoubleClick = HitMannequin == LastClickedMannequin.Get()
+				&& (Now - LastMannequinClickTimeSec) <= ActorDoubleClickWindowSec;
+			LastClickedMannequin = HitMannequin;
+			LastMannequinClickTimeSec = Now;
+
+			if (bDoubleClick)
+			{
+				if (bShiftSelect)
+				{
+					MRegistry->ToggleSelectMannequin(HitMannequin);
+				}
+				else
+				{
+					TArray<AActor*> Sel;
+					Sel.Add(HitMannequin);
+					MRegistry->SetSelection(Sel);
+				}
+#if !UE_BUILD_SHIPPING
+				UE_LOG(
+					LogIH_WB_Demo004, Log,
+					TEXT("Phase mannequin select — actor=%s selectedCount=%d shift=%d"),
+					*HitMannequin->GetName(), MRegistry->GetSelectedMannequins().Num(), bShiftSelect ? 1 : 0);
+#endif
+			}
 			return;
 		}
 	}
@@ -3084,10 +3533,40 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 	}
 
 	AIH_TownGridManager* HitTownGrid = nullptr;
-	if (TryFindTownGridManagerAtScreen(ViewportPick, HitTownGrid))
+	if (GatingPalette && GatingPalette->IsCategorySelectableNow(EIHBuildPaletteTab::Grid)
+		&& TryFindTownGridManagerAtScreen(ViewportPick, HitTownGrid))
 	{
-		SelectTownGridManager(HitTownGrid);
+		// Same Double-Click standardization as Ship/Mannequin.
+		const float Now = GetWorld()->GetRealTimeSeconds();
+		const bool bDoubleClick = HitTownGrid == LastClickedTownGridForDoubleClick.Get()
+			&& (Now - LastTownGridClickTimeSec) <= ActorDoubleClickWindowSec;
+		LastClickedTownGridForDoubleClick = HitTownGrid;
+		LastTownGridClickTimeSec = Now;
+
+		if (bDoubleClick)
+		{
+			SelectTownGridManager(HitTownGrid);
+		}
 		return;
+	}
+
+	// Structure (B) pick - gated to Build being the open tab, same Double-Click standardization.
+	if (GatingPalette && GatingPalette->IsCategorySelectableNow(EIHBuildPaletteTab::Build))
+	{
+		if (AIH_StructurePlacementActor* HitStructure = TraceSelectableStructureAtScreen(ViewportPick))
+		{
+			const float Now = GetWorld()->GetRealTimeSeconds();
+			const bool bDoubleClick = HitStructure == LastClickedStructure.Get()
+				&& (Now - LastStructureClickTimeSec) <= ActorDoubleClickWindowSec;
+			LastClickedStructure = HitStructure;
+			LastStructureClickTimeSec = Now;
+
+			if (bDoubleClick)
+			{
+				SelectStructurePlacement(HitStructure);
+			}
+			return;
+		}
 	}
 
 	if (TryIsOpenWaterClickAtScreen(ViewportPick))
@@ -3098,6 +3577,19 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 			{
 				BuildPalette->ClearTerrainStampSelection();
 			}
+		}
+		// 2026-09-13 fix: this early-return branch never reached the final fallback's
+		// DeselectTownGridManager() below, so "click anywhere to deselect" silently failed
+		// specifically for open-water clicks while a Town Grid was selected (land/grid clicks
+		// already worked, since they fall through to that same final fallback). Town Grid deselect
+		// is unconditional here too, matching the final fallback's own semantics.
+		if (GetSelectedTownGridManager())
+		{
+			DeselectTownGridManager();
+		}
+		if (GetSelectedStructurePlacement())
+		{
+			DeselectStructurePlacement();
 		}
 		if (!bWorldStampEditMode)
 		{
@@ -3117,6 +3609,10 @@ void AIH_Cube2FlyPlayerController::HandleLeftMouseRelease(const FVector2D& Viewp
 	if (GetSelectedTownGridManager())
 	{
 		DeselectTownGridManager();
+	}
+	if (GetSelectedStructurePlacement())
+	{
+		DeselectStructurePlacement();
 	}
 
 	if (!bWorldStampEditMode)
@@ -3159,7 +3655,11 @@ bool AIH_Cube2FlyPlayerController::TryHandleIslandSelectionClickAtViewport(const
 		return false;
 	}
 
-	const float Now = GetWorld()->GetTimeSeconds();
+	// 2026-09-11: same fix as the stamp double-click window (UIH_BuildPaletteSubsystem::
+	// TryHandleStampSelectionClickAtViewport) - GetTimeSeconds() is dilated game time, which this
+	// project's own dev Game Speed slider shrinks well below a human double-click's real duration
+	// whenever speed != 1.0x. Real-world input timing needs GetRealTimeSeconds().
+	const float Now = GetWorld()->GetRealTimeSeconds();
 	const bool bDoubleClick = HitIslandIndex == LastClickedIslandIndex
 		&& (Now - LastIslandClickTimeSec) <= IslandDoubleClickWindowSec;
 	LastClickedIslandIndex = HitIslandIndex;
@@ -3889,6 +4389,20 @@ bool AIH_Cube2FlyPlayerController::TrySampleIslandSurfaceAtScreen(
 	if (const UIH_BuildPaletteSubsystem* BuildPalette = GI->GetSubsystem<UIH_BuildPaletteSubsystem>())
 	{
 		IgnoreActor = BuildPalette->GetDragPreviewIgnoreActor();
+		// 2026-09-18 fix: GetDragPreviewIgnoreActor() only covers the NEW-stamp ghost-preview flow -
+		// during an existing stamp's own Shift+Drag relocate (bStampMoveDragActive) there is no ghost
+		// preview active, so this stayed null and the cursor's own island-surface probe below had no
+		// exclusion for the stamp actually being dragged. Since the cursor naturally sits over/near the
+		// stamp's own mesh while relocating it, the per-component trace inside TrySampleIslandSurfaceAtXY
+		// could intermittently pick the stamp's OWN mesh as the closest "island" hit (it sits above the
+		// bare terrain), returning the stamp itself as OutIslandActor - which then fails the caller's
+		// Cast<AIH_WB_IslandActor> and aborts the whole drag update for that tick. That produced the
+		// "relocation is agnostic to Shift+drag / stutters" symptom: motion froze every tick the cursor
+		// happened to be over the stamp's own silhouette, then jumped to catch up once it moved off.
+		if (!IgnoreActor && BuildPalette->IsStampMoveDragActive())
+		{
+			IgnoreActor = BuildPalette->GetSelectedTerrainStamp();
+		}
 	}
 
 	float ReferenceZ = ProbePoint.Z;
@@ -4800,6 +5314,63 @@ void AIH_Cube2FlyPlayerController::DeselectTownGridManager()
 	SelectTownGridManager(nullptr);
 }
 
+AIH_StructurePlacementActor* AIH_Cube2FlyPlayerController::TraceSelectableStructureAtScreen(const FVector2D& ScreenPos) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	FVector WorldOrigin;
+	FVector WorldDirection;
+	if (!DeprojectScreenToWorldRay(ScreenPos, WorldOrigin, WorldDirection))
+	{
+		return nullptr;
+	}
+
+	const FVector TraceEnd = WorldOrigin + WorldDirection * 5.0e8f;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(P1C08StructureClick), true, this);
+
+	TArray<FHitResult> Hits;
+	if (World->LineTraceMultiByChannel(Hits, WorldOrigin, TraceEnd, ECC_Visibility, Params))
+	{
+		Hits.Sort([](const FHitResult& A, const FHitResult& B) { return A.Distance < B.Distance; });
+		for (const FHitResult& Hit : Hits)
+		{
+			if (AIH_StructurePlacementActor* Structure = Cast<AIH_StructurePlacementActor>(Hit.GetActor()))
+			{
+				return Structure;
+			}
+		}
+	}
+	return nullptr;
+}
+
+void AIH_Cube2FlyPlayerController::SelectStructurePlacement(AIH_StructurePlacementActor* Structure)
+{
+	if (SelectedStructurePlacement.Get() == Structure)
+	{
+		return;
+	}
+
+	if (AIH_StructurePlacementActor* Previous = SelectedStructurePlacement.Get())
+	{
+		Previous->SetStructureSelected(false);
+	}
+
+	SelectedStructurePlacement = Structure;
+	if (Structure)
+	{
+		Structure->SetStructureSelected(true);
+	}
+}
+
+void AIH_Cube2FlyPlayerController::DeselectStructurePlacement()
+{
+	SelectStructurePlacement(nullptr);
+}
+
 void AIH_Cube2FlyPlayerController::TickBuildPaletteAndTownGrid(float DeltaTime)
 {
 	UGameInstance* GI = GetGameInstance();
@@ -4866,10 +5437,23 @@ void AIH_Cube2FlyPlayerController::TickBuildPaletteAndTownGrid(float DeltaTime)
 	{
 		if (Manager->IsMoveDragActive() && IsLeftMouseButtonDown() && bHasViewportMouse)
 		{
-			FVector WorldPoint = FVector::ZeroVector;
-			if (TryTraceTerrainAtScreen(ViewportCur, WorldPoint))
+			// 2026-09-14 fix: relocate is Shift+Drag, but this only ever checked Shift once, at grab
+			// time - releasing Shift mid-drag (very natural to do a beat before releasing the mouse
+			// button) let the drag keep tracking the cursor all the way to wherever the mouse was
+			// finally released, which read as "clicking elsewhere to deselect relocated it instead."
+			// Ending the drag the instant Shift lifts makes the object simply stay wherever it was
+			// when you let go of Shift, and the subsequent mouse-up is then a normal, separate click.
+			if (!IsInputKeyDown(EKeys::LeftShift) && !IsInputKeyDown(EKeys::RightShift))
 			{
-				Manager->UpdateMoveDrag(WorldPoint);
+				Manager->EndMoveDrag();
+			}
+			else
+			{
+				FVector WorldPoint = FVector::ZeroVector;
+				if (TryTraceTerrainAtScreen(ViewportCur, WorldPoint))
+				{
+					Manager->UpdateMoveDrag(WorldPoint);
+				}
 			}
 		}
 		else if (Manager->IsGripDragActive() && IsLeftMouseButtonDown() && bHasViewportMouse)

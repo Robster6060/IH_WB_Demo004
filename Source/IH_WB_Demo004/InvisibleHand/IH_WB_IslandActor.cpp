@@ -16,6 +16,7 @@
 #include "IH_ASLSlopeBiomeRow.h"
 #include "IH_WorldBuilderDataSubsystem.h"
 #include "Components/ArrowComponent.h"
+#include "NavigationSystem.h"
 #include "ProceduralMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
@@ -1719,7 +1720,10 @@ namespace IH_WB_IslandActorPrivate
 	 * CreateIslandBiomeMaterial needs it and this file compiles top-to-bottom in one pass. */
 	static FLinearColor ParseBiomeHexColor(const FString& HexIn);
 
-	static UMaterialInstanceDynamic* CreateIslandBiomeMaterial(UObject* Outer, const FIHASLSlopeBiomeRow& Row)
+	static UMaterialInstanceDynamic* CreateIslandBiomeMaterial(
+		UObject* Outer,
+		const FIHASLSlopeBiomeRow& Row,
+		IHDevViewRuntime::EIHDevColorMode Mode = IHDevViewRuntime::EIHDevColorMode::Bands)
 	{
 		UMaterialInterface* Parent = LoadOpaqueLitParentMaterial();
 		if (!Parent || !Outer)
@@ -1731,7 +1735,12 @@ namespace IH_WB_IslandActorPrivate
 		{
 			return nullptr;
 		}
-		const FLinearColor BiomeColor = ParseBiomeHexColor(Row.biomeColor);
+		// 2026-09-18: DEV View BIOME mode reads the finer per-biome chart color instead of the flat
+		// per-elevation-tier BANDS color; PGC has no distinct visual yet so it deliberately falls
+		// back to BANDS (biomeColor) rather than rendering blank/broken.
+		const bool bUseDetailColor = Mode == IHDevViewRuntime::EIHDevColorMode::Biome
+			&& !Row.biomeDetailColorHex.IsEmpty();
+		const FLinearColor BiomeColor = ParseBiomeHexColor(bUseDetailColor ? Row.biomeDetailColorHex : Row.biomeColor);
 		const float AlbedoScale = IHDevViewRuntime::IsGrabContrastEnabled()
 			? IHInvisibleHandSpec::TopographyGrabContrastAlbedoScale
 			: 1.f;
@@ -1814,6 +1823,7 @@ namespace IH_WB_IslandActorPrivate
 		const TArray<const FIHASLSlopeBiomeRow*>& Rows, const float Zmeters, const float SlopeDeg)
 	{
 		int32 NearestAslOnlyIndex = INDEX_NONE;
+		int32 SlopeAgnosticIndex = INDEX_NONE;
 		for (int32 i = 0; i < Rows.Num(); ++i)
 		{
 			const FIHASLSlopeBiomeRow* Row = Rows[i];
@@ -1825,12 +1835,27 @@ namespace IH_WB_IslandActorPrivate
 			{
 				NearestAslOnlyIndex = i;
 			}
-			if (Row->bSlopeAgnostic || (SlopeDeg >= Row->minSlopeDeg && SlopeDeg <= Row->maxSlopeDeg))
+			// 2026-09-18 fix: the canonical chart lists each tier's Basin row FIRST, before its 6 real
+			// slope-specific rows (Flat..Sheer, which already gaplessly cover 0-90 deg). Matching
+			// bSlopeAgnostic immediately here (as this used to) meant Basin won for EVERY triangle in
+			// the tier regardless of actual face slope, starving all 6 real rows - invisible under
+			// BANDS (biomeColor is the same flat hex for every row in a tier) but fully exposed once
+			// BIOME mode's per-row hex made the (lack of) variation visible. Defer agnostic rows to a
+			// true last-resort - only used if no real slope-specific row in this tier matches at all.
+			if (Row->bSlopeAgnostic)
+			{
+				if (SlopeAgnosticIndex == INDEX_NONE)
+				{
+					SlopeAgnosticIndex = i;
+				}
+				continue;
+			}
+			if (SlopeDeg >= Row->minSlopeDeg && SlopeDeg <= Row->maxSlopeDeg)
 			{
 				return i;
 			}
 		}
-		return NearestAslOnlyIndex;
+		return SlopeAgnosticIndex != INDEX_NONE ? SlopeAgnosticIndex : NearestAslOnlyIndex;
 	}
 
 	/** Per-triangle DT biome match, using real face geometry (average elevation + true face-normal
@@ -1905,11 +1930,14 @@ namespace IH_WB_IslandActorPrivate
 		const TArray<FProcMeshTangent>& Tangents,
 		int32& OutClassifiedTriCount,
 		int32& OutDistinctBiomeCount,
-		int32& OutMixedClampTris)
+		int32& OutMixedClampTris,
+		TArray<int32>& OutSectionRowIndices,
+		IHDevViewRuntime::EIHDevColorMode Mode = IHDevViewRuntime::EIHDevColorMode::Bands)
 	{
 		OutClassifiedTriCount = 0;
 		OutDistinctBiomeCount = 0;
 		OutMixedClampTris = 0;
+		OutSectionRowIndices.Reset();
 		if (!Mesh)
 		{
 			return;
@@ -1973,12 +2001,23 @@ namespace IH_WB_IslandActorPrivate
 
 			TArray<FColor> DummyColors;
 			DummyColors.Init(FColor::White, MeshVerts.Num());
+			// 2026-09-19 perf fix: bCreateCollision=true here used to mean EVERY CreateMeshSection call
+			// triggered UProceduralMeshComponent::UpdateCollision() -> CreatePhysicsMeshes(), a full
+			// synchronous re-cook of the AGGREGATE collision from every section added so far (confirmed
+			// by reading the engine source - UpdateCollision() is unconditional at the end of
+			// CreateMeshSection, not gated on bCreateCollision). With ~6 biome sections this was cheap;
+			// the Basin-classification fix above correctly raised that to ~35-40 real distinct sections
+			// per island, which meant ~35-40 FULL collision recooks instead of ~6, each over a growing
+			// triangle set - measured 10-15x slower island generation (e.g. 11s -> 171s) despite total
+			// triangle count being unchanged. Defer collision to a single UpdateCollision() call after
+			// the whole loop instead (see below) - same final collision, cooked once.
 			Mesh->CreateMeshSection(
-				SectionIdx, MeshVerts, RowTris, Normals, UV0, DummyColors, Tangents, true);
-			if (UMaterialInstanceDynamic* Mid = CreateIslandBiomeMaterial(Outer, *Rows[Pair.Key]))
+				SectionIdx, MeshVerts, RowTris, Normals, UV0, DummyColors, Tangents, false);
+			if (UMaterialInstanceDynamic* Mid = CreateIslandBiomeMaterial(Outer, *Rows[Pair.Key], Mode))
 			{
 				Mesh->SetMaterial(SectionIdx, Mid);
 			}
+			OutSectionRowIndices.Add(Pair.Key);
 			++SectionIdx;
 			++OutDistinctBiomeCount;
 		}
@@ -2010,15 +2049,59 @@ namespace IH_WB_IslandActorPrivate
 			{
 				TArray<FColor> DummyColors;
 				DummyColors.Init(FColor::White, MeshVerts.Num());
-				Mesh->CreateMeshSection(0, MeshVerts, DryTris, Normals, UV0, DummyColors, Tangents, true);
-				if (UMaterialInstanceDynamic* Mid = CreateIslandBiomeMaterial(Outer, *Rows[0]))
+				Mesh->CreateMeshSection(0, MeshVerts, DryTris, Normals, UV0, DummyColors, Tangents, false);
+				if (UMaterialInstanceDynamic* Mid = CreateIslandBiomeMaterial(Outer, *Rows[0], Mode))
 				{
 					Mesh->SetMaterial(0, Mid);
 				}
+				OutSectionRowIndices.Add(0);
 			}
 		}
 
+		// 2026-09-19 perf fix (cont'd): every section above was created with bCreateCollision=false to
+		// skip CreateMeshSection's own per-call collision rebuild. UProceduralMeshComponent::
+		// UpdateCollision() is private, so it can't be called directly - flag every section collision-
+		// enabled first (direct field write via GetProcMeshSection, no rebuild triggered), then
+		// re-issue section 0's own already-stored geometry through the public CreateMeshSection API
+		// with bCreateCollision=true. That call's internal (unconditional) collision rebuild then
+		// aggregates every section flagged above into one cook - materials are a separate per-section
+		// slot untouched by re-uploading identical geometry, so section 0's material is unaffected.
+		for (int32 Section = 0; Section < Mesh->GetNumSections(); ++Section)
+		{
+			if (FProcMeshSection* ProcSection = Mesh->GetProcMeshSection(Section))
+			{
+				ProcSection->bEnableCollision = true;
+			}
+		}
+		if (const FProcMeshSection* Section0 = Mesh->GetProcMeshSection(0))
+		{
+			// Must copy (and widen uint32 -> int32, ProcIndexBuffer's own element type) - CreateMeshSection(0, ...)
+			// resets ProcMeshSections[0] (Section0's own backing storage) before reading the Triangles
+			// argument, so passing Section0->ProcIndexBuffer by reference would read an already-cleared array.
+			TArray<int32> Section0Triangles;
+			Section0Triangles.Reserve(Section0->ProcIndexBuffer.Num());
+			for (const uint32 Idx : Section0->ProcIndexBuffer)
+			{
+				Section0Triangles.Add(static_cast<int32>(Idx));
+			}
+			TArray<FColor> DummyColors;
+			DummyColors.Init(FColor::White, MeshVerts.Num());
+			Mesh->CreateMeshSection(
+				0, MeshVerts, Section0Triangles, Normals, UV0, DummyColors, Tangents, true);
+		}
+
 		Mesh->ContainsPhysicsTriMeshData(true);
+
+		// 2026-09-12: root cause of "Mannequin troop movement never paths, even minutes after the
+		// island finishes generating and regardless of NavMesh invoker radius" - UProceduralMeshComponent::
+		// CreateMeshSection only calls MarkRenderStateDirty() (confirmed by reading the engine source),
+		// which refreshes rendering and physics collision, but never tells the navigation system this
+		// component's collision geometry actually changed. Since IslandMesh is registered early with no
+		// mesh data and its real terrain is built here at runtime, the nav octree's entry for it stays
+		// "empty" forever unless explicitly refreshed - meaning Recast never sees any walkable island
+		// geometry at all, no matter how long you wait. This one call is the fix.
+		UNavigationSystemV1::UpdateComponentInNavOctree(*Mesh);
+
 		UE_LOG(LogTemp, Log,
 			TEXT("IH_WB_IslandActor: IslandMesh waterlineClamp=%d mixedClampTris=%d classifiedTris=%d distinctBiomes=%d"),
 			bWaterlineClamp ? 1 : 0, OutMixedClampTris, OutClassifiedTriCount, OutDistinctBiomeCount);
@@ -2190,6 +2273,32 @@ void AIH_WB_IslandActor::ApplyDevGrabContrastMaterials(const bool bGrabContrast)
 		}
 		MID->SetScalarParameterValue(FName(TEXT("Roughness")), Roughness);
 		MID->SetScalarParameterValue(FName(TEXT("Specular")), Specular);
+	}
+}
+
+void AIH_WB_IslandActor::ApplyDevColorMode(const IHDevViewRuntime::EIHDevColorMode Mode)
+{
+	if (!IslandMesh || BiomeSectionRowIndices.Num() == 0)
+	{
+		return;
+	}
+	const TArray<const FIHASLSlopeBiomeRow*> Rows =
+		IH_WB_IslandActorPrivate::GetBiomeRowsSortedForClassification(this);
+	if (Rows.Num() == 0)
+	{
+		return;
+	}
+	for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
+	{
+		if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
+		{
+			continue;
+		}
+		if (UMaterialInstanceDynamic* Mid = IH_WB_IslandActorPrivate::CreateIslandBiomeMaterial(
+			this, *Rows[BiomeSectionRowIndices[Section]], Mode))
+		{
+			IslandMesh->SetMaterial(Section, Mid);
+		}
 	}
 }
 
@@ -4624,7 +4733,8 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 	int32 MixedClampTris = 0;
 	IH_WB_IslandActorPrivate::ApplyDtBiomeColorBands(
 		IslandMesh, this, Vertices, Triangles, Normals, UV0, Tangents,
-		ClassifiedBiomeTris, DistinctBiomeCount, MixedClampTris);
+		ClassifiedBiomeTris, DistinctBiomeCount, MixedClampTris, BiomeSectionRowIndices,
+		IHDevViewRuntime::GetDevColorMode());
 
 	// Diagnostic (plan Addendum 1, Bug 2): MainCoastPolylineLocalCm and ShelfPolylineLocalCm are
 	// each picked independently as "largest loop" from graphs that can have hundreds of loops

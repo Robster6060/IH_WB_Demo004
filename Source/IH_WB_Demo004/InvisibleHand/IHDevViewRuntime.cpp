@@ -26,6 +26,8 @@ namespace
 	bool GCloudsVisible = false;
 	/** Fidelity grabs: lower sun + darker TOPO (default OFF so L1 can A/B). */
 	bool GGrabContrastEnabled = false;
+	/** Default BANDS - matches the pre-toggle always-on behavior exactly. */
+	IHDevViewRuntime::EIHDevColorMode GDevColorMode = IHDevViewRuntime::EIHDevColorMode::Bands;
 }
 #endif
 
@@ -49,6 +51,9 @@ bool IHInvisibleHandSpec::DevView_AreContoursEnabled()
 namespace IHDevViewRuntime
 {
 #if UE_BUILD_SHIPPING
+	EIHDevColorMode GetDevColorMode() { return EIHDevColorMode::Bands; }
+	void SetDevColorMode(EIHDevColorMode) {}
+	void ApplyDevColorModeToWorld(UWorld*) {}
 	bool IsOceanVisible() { return true; }
 	void SetOceanVisible(bool) {}
 	bool AreContoursVisible() { return false; }
@@ -65,6 +70,20 @@ namespace IHDevViewRuntime
 	void ApplyCloudsVisibilityToWorld(UWorld*) {}
 	void ApplyGrabContrastToWorld(UWorld*) {}
 #else
+	EIHDevColorMode GetDevColorMode() { return GDevColorMode; }
+	void SetDevColorMode(const EIHDevColorMode Mode) { GDevColorMode = Mode; }
+
+	void ApplyDevColorModeToWorld(UWorld* World)
+	{
+		if (!World) return;
+		const EIHDevColorMode Mode = GetDevColorMode();
+		for (TActorIterator<AIH_WB_IslandActor> It(World); It; ++It)
+		{
+			It->ApplyDevColorMode(Mode);
+		}
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("Phase DEV-WWF viewToggle colorMode=%d"), (int32)Mode);
+	}
+
 	bool IsOceanVisible() { return GOceanVisible; }
 	void SetOceanVisible(const bool bVisible) { GOceanVisible = bVisible; }
 

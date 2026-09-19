@@ -96,16 +96,16 @@ void UIH_P1C08_DevViewWidget::EnsureWidgetTree()
 	VB->AddChildToVerticalBox(Title);
 
 	OceanCheck = MakeRow(WidgetTree, VB, TEXT("Ocean"), TEXT("Ocean"));
-	ContoursCheck = MakeRow(WidgetTree, VB, TEXT("Contours"), TEXT("Contours"));
-	FeaturesCheck = MakeRow(WidgetTree, VB, TEXT("Features"), TEXT("Features"));
+	BandsCheck = MakeRow(WidgetTree, VB, TEXT("Bands"), TEXT("BANDS"));
+	BiomeCheck = MakeRow(WidgetTree, VB, TEXT("Biome"), TEXT("BIOME"));
 	CloudsCheck = MakeRow(WidgetTree, VB, TEXT("Clouds"), TEXT("Clouds"));
-	GrabContrastCheck = MakeRow(WidgetTree, VB, TEXT("GrabContrast"), TEXT("GrabContrast"));
+	PgcCheck = MakeRow(WidgetTree, VB, TEXT("Pgc"), TEXT("PGC"));
 
 	OceanCheck->OnCheckStateChanged.AddDynamic(this, &UIH_P1C08_DevViewWidget::HandleOceanChanged);
-	ContoursCheck->OnCheckStateChanged.AddDynamic(this, &UIH_P1C08_DevViewWidget::HandleContoursChanged);
-	FeaturesCheck->OnCheckStateChanged.AddDynamic(this, &UIH_P1C08_DevViewWidget::HandleFeaturesChanged);
+	BandsCheck->OnCheckStateChanged.AddDynamic(this, &UIH_P1C08_DevViewWidget::HandleBandsChanged);
+	BiomeCheck->OnCheckStateChanged.AddDynamic(this, &UIH_P1C08_DevViewWidget::HandleBiomeChanged);
 	CloudsCheck->OnCheckStateChanged.AddDynamic(this, &UIH_P1C08_DevViewWidget::HandleCloudsChanged);
-	GrabContrastCheck->OnCheckStateChanged.AddDynamic(this, &UIH_P1C08_DevViewWidget::HandleGrabContrastChanged);
+	PgcCheck->OnCheckStateChanged.AddDynamic(this, &UIH_P1C08_DevViewWidget::HandlePgcChanged);
 
 	PanelBorder->AddChild(VB);
 	PanelSizeBox->AddChild(PanelBorder);
@@ -139,10 +139,11 @@ void UIH_P1C08_DevViewWidget::SyncChecksFromRuntime()
 {
 	bSuppressCheckNotify = true;
 	if (OceanCheck) OceanCheck->SetIsChecked(IHDevViewRuntime::IsOceanVisible());
-	if (ContoursCheck) ContoursCheck->SetIsChecked(IHDevViewRuntime::AreContoursVisible());
-	if (FeaturesCheck) FeaturesCheck->SetIsChecked(IHDevViewRuntime::AreFeaturesVisible());
 	if (CloudsCheck) CloudsCheck->SetIsChecked(IHDevViewRuntime::AreCloudsVisible());
-	if (GrabContrastCheck) GrabContrastCheck->SetIsChecked(IHDevViewRuntime::IsGrabContrastEnabled());
+	const IHDevViewRuntime::EIHDevColorMode Mode = IHDevViewRuntime::GetDevColorMode();
+	if (BandsCheck) BandsCheck->SetIsChecked(Mode == IHDevViewRuntime::EIHDevColorMode::Bands);
+	if (BiomeCheck) BiomeCheck->SetIsChecked(Mode == IHDevViewRuntime::EIHDevColorMode::Biome);
+	if (PgcCheck) PgcCheck->SetIsChecked(Mode == IHDevViewRuntime::EIHDevColorMode::PGC);
 	bSuppressCheckNotify = false;
 }
 
@@ -184,10 +185,10 @@ bool UIH_P1C08_DevViewWidget::HandleScreenPointerDown(const FVector2D& ScreenAbs
 {
 	if (!IsScreenPointOverPanel(ScreenAbsolute)) return false;
 	if (TryToggleCheckAtScreen(OceanCheck, &UIH_P1C08_DevViewWidget::HandleOceanChanged, ScreenAbsolute)
-		|| TryToggleCheckAtScreen(ContoursCheck, &UIH_P1C08_DevViewWidget::HandleContoursChanged, ScreenAbsolute)
-		|| TryToggleCheckAtScreen(FeaturesCheck, &UIH_P1C08_DevViewWidget::HandleFeaturesChanged, ScreenAbsolute)
+		|| TryToggleCheckAtScreen(BandsCheck, &UIH_P1C08_DevViewWidget::HandleBandsChanged, ScreenAbsolute)
+		|| TryToggleCheckAtScreen(BiomeCheck, &UIH_P1C08_DevViewWidget::HandleBiomeChanged, ScreenAbsolute)
 		|| TryToggleCheckAtScreen(CloudsCheck, &UIH_P1C08_DevViewWidget::HandleCloudsChanged, ScreenAbsolute)
-		|| TryToggleCheckAtScreen(GrabContrastCheck, &UIH_P1C08_DevViewWidget::HandleGrabContrastChanged, ScreenAbsolute))
+		|| TryToggleCheckAtScreen(PgcCheck, &UIH_P1C08_DevViewWidget::HandlePgcChanged, ScreenAbsolute))
 	{
 		return true;
 	}
@@ -201,20 +202,6 @@ void UIH_P1C08_DevViewWidget::HandleOceanChanged(const bool bIsChecked)
 	IHDevViewRuntime::ApplyOceanVisibilityToWorld(GetWorld());
 }
 
-void UIH_P1C08_DevViewWidget::HandleContoursChanged(const bool bIsChecked)
-{
-	if (bSuppressCheckNotify) return;
-	IHDevViewRuntime::SetContoursVisible(bIsChecked);
-	IHDevViewRuntime::ApplyContoursVisibilityToWorld(GetWorld());
-}
-
-void UIH_P1C08_DevViewWidget::HandleFeaturesChanged(const bool bIsChecked)
-{
-	if (bSuppressCheckNotify) return;
-	IHDevViewRuntime::SetFeaturesVisible(bIsChecked);
-	IHDevViewRuntime::ApplyFeaturesVisibilityToWorld(GetWorld());
-}
-
 void UIH_P1C08_DevViewWidget::HandleCloudsChanged(const bool bIsChecked)
 {
 	if (bSuppressCheckNotify) return;
@@ -222,9 +209,44 @@ void UIH_P1C08_DevViewWidget::HandleCloudsChanged(const bool bIsChecked)
 	IHDevViewRuntime::ApplyCloudsVisibilityToWorld(GetWorld());
 }
 
-void UIH_P1C08_DevViewWidget::HandleGrabContrastChanged(const bool bIsChecked)
+void UIH_P1C08_DevViewWidget::ApplyColorModeCheckboxChange(
+	const IHDevViewRuntime::EIHDevColorMode Mode, UCheckBox* Self, const bool bIsChecked)
 {
 	if (bSuppressCheckNotify) return;
-	IHDevViewRuntime::SetGrabContrastEnabled(bIsChecked);
-	IHDevViewRuntime::ApplyGrabContrastToWorld(GetWorld());
+
+	if (!bIsChecked)
+	{
+		// Exactly one mode is always active - reject unchecking whichever box represents it.
+		if (IHDevViewRuntime::GetDevColorMode() == Mode && Self)
+		{
+			bSuppressCheckNotify = true;
+			Self->SetIsChecked(true);
+			bSuppressCheckNotify = false;
+		}
+		return;
+	}
+
+	IHDevViewRuntime::SetDevColorMode(Mode);
+	IHDevViewRuntime::ApplyDevColorModeToWorld(GetWorld());
+
+	bSuppressCheckNotify = true;
+	if (BandsCheck && BandsCheck != Self) BandsCheck->SetIsChecked(false);
+	if (BiomeCheck && BiomeCheck != Self) BiomeCheck->SetIsChecked(false);
+	if (PgcCheck && PgcCheck != Self) PgcCheck->SetIsChecked(false);
+	bSuppressCheckNotify = false;
+}
+
+void UIH_P1C08_DevViewWidget::HandleBandsChanged(const bool bIsChecked)
+{
+	ApplyColorModeCheckboxChange(IHDevViewRuntime::EIHDevColorMode::Bands, BandsCheck, bIsChecked);
+}
+
+void UIH_P1C08_DevViewWidget::HandleBiomeChanged(const bool bIsChecked)
+{
+	ApplyColorModeCheckboxChange(IHDevViewRuntime::EIHDevColorMode::Biome, BiomeCheck, bIsChecked);
+}
+
+void UIH_P1C08_DevViewWidget::HandlePgcChanged(const bool bIsChecked)
+{
+	ApplyColorModeCheckboxChange(IHDevViewRuntime::EIHDevColorMode::PGC, PgcCheck, bIsChecked);
 }
