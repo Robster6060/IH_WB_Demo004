@@ -25,6 +25,7 @@
 
 #include "IHInvisibleHandDesignSpec.h"
 #include "FIHTerrainStampTypes.h"
+#include "FIHTerrainStampMeshTypes.h"
 
 #include "Blueprint/WidgetTree.h"
 
@@ -862,6 +863,15 @@ float UIH_BuildPaletteHostWidget::ComputeHostPanelHeight() const
 			+ SpecialBlockH + ReservedBlockH + 16.f;
 		return FMath::Max(TabStripMinH, FlyOutContentH);
 	}
+	case EIHBuildPaletteTab::Convey:
+	{
+		// 2026-09-13: dev-only Merchantman drag tile - mirrors Build's single-column row layout.
+		const int32 RowCount = FMath::Max(CachedConveyRows.Num(), 1);
+		const float TemplateListH = static_cast<float>(RowCount) * IH_BuildPalettePanelStyle::GridTemplateRowHeight
+			+ static_cast<float>(FMath::Max(RowCount - 1, 0)) * IH_BuildPalettePanelStyle::GridTemplateRowGap;
+		const float FlyOutContentH = IH_BuildPalettePanelStyle::GridFlyOutHeaderBlockH + 8.f + TemplateListH + 8.f;
+		return FMath::Max(TabStripMinH, FlyOutContentH);
+	}
 	default:
 
 		return FMath::Max(TabStripMinH, StubFlyOutMinH);
@@ -1201,6 +1211,18 @@ bool UIH_BuildPaletteHostWidget::TryGetBuildTemplateRowLocalRect(int32 RowIndex,
 	return true;
 }
 
+bool UIH_BuildPaletteHostWidget::TryGetConveyTemplateRowLocalRect(int32 RowIndex, FSlateRect& OutLocalRect) const
+{
+	if (!CachedConveyRows.IsValidIndex(RowIndex))
+	{
+		return false;
+	}
+
+	const float RowTop = IH_BuildPaletteHostWidgetPrivate::GetFlyOutTemplateRowTop(RowIndex);
+	OutLocalRect = IH_BuildPaletteHostWidgetPrivate::MakeFullTemplateRowLocalRect(RowTop);
+	return true;
+}
+
 int32 UIH_BuildPaletteHostWidget::PaintGridFlyOutContent(
 	const FGeometry& FlyOutGeometry,
 	FSlateWindowElementList& OutDrawElements,
@@ -1359,6 +1381,72 @@ int32 UIH_BuildPaletteHostWidget::PaintBuildFlyOutContent(
 	return CurrentLayer;
 }
 
+int32 UIH_BuildPaletteHostWidget::PaintConveyFlyOutContent(
+	const FGeometry& FlyOutGeometry,
+	FSlateWindowElementList& OutDrawElements,
+	int32 LayerId) const
+{
+	// 2026-09-13: dev-only Merchantman drag tile - mirrors PaintBuildFlyOutContent, minus the
+	// zone-glyph column (ships have no parcel zone requirement). One hardcoded row, no DataTable -
+	// this whole tab will be revised once Convey grows beyond a single dev placement tile.
+	if (!ActiveFlyOutTab.IsSet() || ActiveFlyOutTab.GetValue() != EIHBuildPaletteTab::Convey)
+	{
+		return LayerId;
+	}
+
+	const float FlyOutW = IH_BuildPalettePanelStyle::FlyOutWidth;
+	const FSlateFontInfo HeaderFont = FCoreStyle::GetDefaultFontStyle(
+		"Bold", IH_P1C08_DevPanelStyle::CompactLabelFontSize);
+	const FSlateFontInfo RowFont = FCoreStyle::GetDefaultFontStyle(
+		"Regular", IH_P1C08_DevPanelStyle::CompactLabelFontSize);
+	const FLinearColor HeaderColor = IH_BuildPalettePanelStyle::FocusBlue;
+	const FLinearColor RowColor = UIHUIColorSchemeLibrary::GetHUDStartingColor(FName(TEXT("HeadingText")));
+
+	FSlateDrawElement::MakeText(
+		OutDrawElements,
+		LayerId,
+		FlyOutGeometry.ToPaintGeometry(
+			FVector2f(FlyOutW - IH_BuildPalettePanelStyle::GridFlyOutContentInsetX * 2.f, 18.f),
+			FSlateLayoutTransform(FVector2f(
+				IH_BuildPalettePanelStyle::GridFlyOutContentInsetX,
+				IH_BuildPalettePanelStyle::GridFlyOutHeaderY))),
+		TEXT("Dev Convey"),
+		HeaderFont,
+		ESlateDrawEffect::None,
+		HeaderColor);
+
+	int32 CurrentLayer = LayerId + 1;
+	for (int32 RowIndex = 0; RowIndex < CachedConveyRows.Num(); ++RowIndex)
+	{
+		const FIHBuildPaletteItemRow& Row = CachedConveyRows[RowIndex];
+		const FString Label = Row.displayName.IsEmpty() ? Row.itemID.ToString() : Row.displayName;
+		const float RowTop = IH_BuildPalettePanelStyle::GridFlyOutRowStartY
+			+ static_cast<float>(RowIndex)
+				* (IH_BuildPalettePanelStyle::GridTemplateRowHeight + IH_BuildPalettePanelStyle::GridTemplateRowGap);
+		const float IconX = IH_BuildPalettePanelStyle::GridFlyOutContentInsetX;
+		const float IconSize = IH_BuildPalettePanelStyle::GridTemplateTileSize;
+
+		FSlateDrawElement::MakeText(
+			OutDrawElements,
+			CurrentLayer,
+			FlyOutGeometry.ToPaintGeometry(
+				FVector2f(
+					FlyOutW - IconX - IconSize - IH_BuildPalettePanelStyle::GridFlyOutIconLabelGap
+						- IH_BuildPalettePanelStyle::GridFlyOutContentInsetX,
+					IconSize),
+				FSlateLayoutTransform(FVector2f(
+					IconX + IconSize + IH_BuildPalettePanelStyle::GridFlyOutIconLabelGap,
+					RowTop + 14.f))),
+			Label,
+			RowFont,
+			ESlateDrawEffect::None,
+			RowColor);
+		++CurrentLayer;
+	}
+
+	return CurrentLayer;
+}
+
 bool UIH_BuildPaletteHostWidget::TryGetWorldStampSlotLocalRect(
 	const int32 SlotIndex,
 	FSlateRect& OutLocalRect) const
@@ -1421,11 +1509,16 @@ int32 UIH_BuildPaletteHostWidget::PaintWorldStampSlot(
 {
 	const float W = LocalRect.Right - LocalRect.Left;
 	const float H = LocalRect.Bottom - LocalRect.Top;
+	// Three visual states (2026-09-09): bReserved (empty "+" mod-expansion slot, unchanged) vs.
+	// !bActive (a known canonical stamp family with no static mesh shipped yet - reads as "coming
+	// soon," distinct from an empty reserved slot) vs. bActive (a real, placeable stamp).
 	const FLinearColor Fill = StampSlot.bReserved
 		? FLinearColor(0.12f, 0.13f, 0.15f, 0.45f)
-		: (bHovered
-			? FLinearColor(0.22f, 0.38f, 0.28f, 0.95f)
-			: FLinearColor(0.16f, 0.28f, 0.20f, 0.92f));
+		: (!StampSlot.bActive
+			? FLinearColor(0.14f, 0.14f, 0.16f, 0.75f)
+			: (bHovered
+				? FLinearColor(0.22f, 0.38f, 0.28f, 0.95f)
+				: FLinearColor(0.16f, 0.28f, 0.20f, 0.92f)));
 	DrawSolidLocalRect(
 		OutDrawElements,
 		LayerId,
@@ -1435,9 +1528,12 @@ int32 UIH_BuildPaletteHostWidget::PaintWorldStampSlot(
 
 	const FSlateFontInfo LabelFont = FCoreStyle::GetDefaultFontStyle(
 		"Regular", IH_P1C08_DevPanelStyle::CompactLabelFontSize - 1);
-	const FLinearColor LabelColor = StampSlot.bReserved
+	// Active (real-mesh-backed) stamp labels get the canonical "stamp active/highlighted" green
+	// (IHTerrainStampColors::AllStampsToggleColor, #9AE630) - reserved slots and not-yet-available
+	// canonical stamps both read grey (DisabledTabText), distinguished only by fill/glyph above.
+	const FLinearColor LabelColor = (StampSlot.bReserved || !StampSlot.bActive)
 		? IH_BuildPalettePanelStyle::DisabledTabText
-		: FLinearColor::White;
+		: FLinearColor(IHTerrainStampColors::AllStampsToggleColor);
 	FSlateDrawElement::MakeText(
 		OutDrawElements,
 		LayerId,
@@ -1855,6 +1951,38 @@ int32 UIH_BuildPaletteHostWidget::HitTestBuildTemplateTile(const FVector2D& Scre
 	return INDEX_NONE;
 }
 
+int32 UIH_BuildPaletteHostWidget::HitTestConveyTemplateTile(const FVector2D& ScreenAbsolute) const
+{
+	if (!ActiveFlyOutTab.IsSet() || ActiveFlyOutTab.GetValue() != EIHBuildPaletteTab::Convey)
+	{
+		return INDEX_NONE;
+	}
+
+	FSlateRect FlyOutRect;
+	if (!TryGetFlyOutScreenRect(FlyOutRect))
+	{
+		return INDEX_NONE;
+	}
+
+	const FVector2D Local(ScreenAbsolute.X - FlyOutRect.Left, ScreenAbsolute.Y - FlyOutRect.Top);
+	for (int32 RowIndex = 0; RowIndex < CachedConveyRows.Num(); ++RowIndex)
+	{
+		FSlateRect RowLocal;
+		if (!TryGetConveyTemplateRowLocalRect(RowIndex, RowLocal))
+		{
+			continue;
+		}
+
+		if (Local.X >= RowLocal.Left && Local.X <= RowLocal.Right
+			&& Local.Y >= RowLocal.Top && Local.Y <= RowLocal.Bottom)
+		{
+			return RowIndex;
+		}
+	}
+
+	return INDEX_NONE;
+}
+
 int32 UIH_BuildPaletteHostWidget::HitTestWorldStampTile(const FVector2D& ScreenAbsolute) const
 {
 	if (!ActiveFlyOutTab.IsSet() || ActiveFlyOutTab.GetValue() != EIHBuildPaletteTab::World)
@@ -1901,8 +2029,45 @@ int32 UIH_BuildPaletteHostWidget::HitTestWorldStampTile(const FVector2D& ScreenA
 bool UIH_BuildPaletteHostWidget::HandleScreenPointerDown(const FVector2D& ScreenAbsolute)
 
 {
+	// 2026-09-18 diag: investigating "D&D doesn't work in Top Down View" - gated to avoid spamming
+	// Regular View. Reports exactly which check bails so we don't have to guess.
+	const bool bDiagTopDown = OwnerPC.IsValid() && OwnerPC->IsTopDownViewActive();
 
 	const int32 TabIndex = HitTestTabIndex(ScreenAbsolute);
+	if (bDiagTopDown)
+	{
+		FSlateRect DiagStripRect;
+		const bool bHaveStripRect = TryGetTabStripScreenRect(DiagStripRect);
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("HandleScreenPointerDown DIAG: cursor=(%.0f,%.0f) tabIndex=%d haveStripRect=%d stripRect=(%.0f,%.0f,%.0f,%.0f) activeFlyOut=%d"),
+			ScreenAbsolute.X, ScreenAbsolute.Y, TabIndex, bHaveStripRect ? 1 : 0,
+			DiagStripRect.Left, DiagStripRect.Top, DiagStripRect.Right, DiagStripRect.Bottom,
+			ActiveFlyOutTab.IsSet() ? 1 : 0);
+
+		// 2026-09-18 diag cont'd: is CursorAbsolute really the same coordinate space GetBaseGeometry()
+		// reports itself in? Log the raw Slate cursor pos, GetBaseGeometry()'s own abs pos/size, and
+		// whether it resolved via the real game viewport widget or fell back to this widget's own
+		// cached geometry (a different reference frame if this widget is nested under other chrome).
+		const FVector2D RawSlateCursor = FSlateApplication::IsInitialized()
+			? FSlateApplication::Get().GetCursorPos() : FVector2D(-1.f, -1.f);
+		bool bResolvedViaGameViewportWidget = false;
+		if (const AIH_Cube2FlyPlayerController* PC = OwnerPC.Get())
+		{
+			if (const ULocalPlayer* LocalPlayer = PC->GetLocalPlayer())
+			{
+				if (const UGameViewportClient* ViewportClient = LocalPlayer->ViewportClient)
+				{
+					bResolvedViaGameViewportWidget = ViewportClient->GetGameViewportWidget().IsValid();
+				}
+			}
+		}
+		const FGeometry DiagBaseGeom = GetBaseGeometry();
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("HandleScreenPointerDown DIAG2: rawSlateCursor=(%.0f,%.0f) viaGameViewportWidget=%d baseGeomAbs=(%.0f,%.0f) baseGeomSize=(%.0f,%.0f)"),
+			RawSlateCursor.X, RawSlateCursor.Y, bResolvedViaGameViewportWidget ? 1 : 0,
+			DiagBaseGeom.GetAbsolutePosition().X, DiagBaseGeom.GetAbsolutePosition().Y,
+			DiagBaseGeom.GetLocalSize().X, DiagBaseGeom.GetLocalSize().Y);
+	}
 	if (TabIndex != INDEX_NONE)
 	{
 		if (UIH_BuildPaletteSubsystem* Subsystem = BuildPaletteSubsystem.Get())
@@ -1927,7 +2092,17 @@ bool UIH_BuildPaletteHostWidget::HandleScreenPointerDown(const FVector2D& Screen
 		return false;
 	}
 
-	if (!ActiveFlyOutTab.IsSet() || !IsScreenPointOverBuildPalette(ScreenAbsolute))
+	const bool bOverPalette = ActiveFlyOutTab.IsSet() && IsScreenPointOverBuildPalette(ScreenAbsolute);
+	if (bDiagTopDown)
+	{
+		FSlateRect DiagFlyOutRect;
+		const bool bHaveFlyOutRect = TryGetFlyOutScreenRect(DiagFlyOutRect);
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("HandleScreenPointerDown DIAG: overPalette=%d haveFlyOutRect=%d flyOutRect=(%.0f,%.0f,%.0f,%.0f)"),
+			bOverPalette ? 1 : 0, bHaveFlyOutRect ? 1 : 0,
+			DiagFlyOutRect.Left, DiagFlyOutRect.Top, DiagFlyOutRect.Right, DiagFlyOutRect.Bottom);
+	}
+	if (!bOverPalette)
 
 	{
 
@@ -1984,6 +2159,31 @@ bool UIH_BuildPaletteHostWidget::HandleScreenPointerDown(const FVector2D& Screen
 					LogIH_WB_Demo004, Warning,
 					TEXT("BuildPaletteHost: structure drag failed tile=%d item=%s"),
 					BuildTileIndex, *ItemID.ToString());
+			}
+		}
+		return true;
+	}
+
+	const int32 ConveyTileIndex = HitTestConveyTemplateTile(ScreenAbsolute);
+	if (ConveyTileIndex != INDEX_NONE && CachedConveyRows.IsValidIndex(ConveyTileIndex))
+	{
+		// 2026-09-13: dev-only Merchantman drag tile - no DataTable row to look up, so this goes
+		// through a dedicated BeginDragForMerchantmanTile instead of BeginDragFromItem.
+		if (UIH_BuildPaletteSubsystem* Subsystem = BuildPaletteSubsystem.Get())
+		{
+			if (Subsystem->BeginDragForMerchantmanTile(OwnerPC.Get()))
+			{
+				UE_LOG(
+					LogIH_WB_Demo004, Log,
+					TEXT("BuildPaletteHost: Merchantman tile drag started tile=%d"),
+					ConveyTileIndex);
+			}
+			else
+			{
+				UE_LOG(
+					LogIH_WB_Demo004, Warning,
+					TEXT("BuildPaletteHost: Merchantman tile drag failed tile=%d"),
+					ConveyTileIndex);
 			}
 		}
 		return true;
@@ -2142,6 +2342,10 @@ int32 UIH_BuildPaletteHostWidget::NativePaint(
 		else if (ActiveFlyOutTab.GetValue() == EIHBuildPaletteTab::World)
 		{
 			MaxLayer = PaintWorldFlyOutContent(FlyOutGeometry, OutDrawElements, MaxLayer + 1);
+		}
+		else if (ActiveFlyOutTab.GetValue() == EIHBuildPaletteTab::Convey)
+		{
+			MaxLayer = PaintConveyFlyOutContent(FlyOutGeometry, OutDrawElements, MaxLayer + 1);
 		}
 	}
 
@@ -2310,6 +2514,23 @@ void UIH_BuildPaletteHostWidget::RefreshBuildTemplateList()
 	RequestLayoutRefresh();
 }
 
+void UIH_BuildPaletteHostWidget::RefreshConveyTemplateList()
+{
+	// 2026-09-13: dev-only Merchantman drag tile - one hardcoded row, no DataTable (unlike Grid/
+	// Build). Will grow into a real DataTable-driven list once Convey is revised beyond this.
+	CachedConveyRows.Reset();
+
+	FIHBuildPaletteItemRow MerchantmanRow;
+	MerchantmanRow.itemID = FName(TEXT("Merchantman"));
+	MerchantmanRow.paletteTab = EIHBuildPaletteTab::Convey;
+	MerchantmanRow.interactionType = EIHBuildPaletteInteraction::DropActor;
+	MerchantmanRow.displayName = TEXT("Merchantman");
+	MerchantmanRow.tooltip = TEXT("Dev: place a Merchantman ship (identical to Place Ship)");
+	CachedConveyRows.Add(MerchantmanRow);
+
+	RequestLayoutRefresh();
+}
+
 void UIH_BuildPaletteHostWidget::RefreshWorldStampPalette()
 {
 	CachedWorldStampSlots.Reset();
@@ -2341,7 +2562,11 @@ void UIH_BuildPaletteHostWidget::RefreshWorldStampPalette()
 		const FIHTerrainStampDefinition& Def = FIHTerrainStampCatalog::Get(StampId);
 		FWorldStampPaletteSlot StampSlot;
 		StampSlot.StampId = StampId;
-		StampSlot.bActive = true;
+		// 2026-09-09: driven by DT_TerrainStamp now - a slot is only clickable once its row has a
+		// real static mesh assigned (FIHTerrainStampMeshCatalog::IsAvailable). The old procedural
+		// height-grid path this used to unconditionally enable is dead code (see
+		// UIH_BuildPaletteSubsystem::CommitActiveTerrainStampDrop's own comment).
+		StampSlot.bActive = FIHTerrainStampMeshCatalog::IsAvailable(StampId);
 		StampSlot.ShortLabel = MakeShortLabel(Def);
 		CachedWorldStampSlots.Add(StampSlot);
 	}
@@ -2349,7 +2574,7 @@ void UIH_BuildPaletteHostWidget::RefreshWorldStampPalette()
 	{
 		FWorldStampPaletteSlot SpecialSlot;
 		SpecialSlot.StampId = EIHTerrainStampId::IslandShelf;
-		SpecialSlot.bActive = true;
+		SpecialSlot.bActive = FIHTerrainStampMeshCatalog::IsAvailable(EIHTerrainStampId::IslandShelf);
 		SpecialSlot.ShortLabel = TEXT("Shelf");
 		CachedWorldStampSlots.Add(SpecialSlot);
 	}
@@ -2441,11 +2666,11 @@ void UIH_BuildPaletteHostWidget::SyncFlyOutContentVisibility()
 		}
 	};
 
-	// Grid / Build lists are painted in NativePaint; keep UMG fly-out vboxes collapsed.
+	// Grid / Build / Convey lists are painted in NativePaint; keep UMG fly-out vboxes collapsed.
 	SetVBoxVisible(GridFlyOutVBox, false);
 	SetVBoxVisible(BuildFlyOutVBox, false);
 	SetVBoxVisible(WorldFlyOutVBox, VisibleTab == EIHBuildPaletteTab::World && ActiveFlyOutTab.IsSet());
-	SetVBoxVisible(ConveyFlyOutVBox, VisibleTab == EIHBuildPaletteTab::Convey && ActiveFlyOutTab.IsSet());
+	SetVBoxVisible(ConveyFlyOutVBox, false);
 	SetVBoxVisible(DefenseFlyOutVBox, VisibleTab == EIHBuildPaletteTab::Defense && ActiveFlyOutTab.IsSet());
 }
 

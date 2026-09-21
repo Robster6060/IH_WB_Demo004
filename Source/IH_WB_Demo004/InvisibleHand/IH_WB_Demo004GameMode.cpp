@@ -2,6 +2,10 @@
 
 #include "IH_WB_Demo004GameMode.h"
 
+#include "NavigationSystem.h"
+#include "AI/Navigation/NavigationBounds.h"
+#include "NavMesh/NavMeshBoundsVolume.h"
+#include "Components/BrushComponent.h"
 #include "IH_P1C08_CoastlineTuningSubsystem.h"
 #include "IH_P1C08_IslandManualTransform.h"
 #include "IH_P1C08_IslandNavSubsystem.h"
@@ -1082,6 +1086,19 @@ void AIH_WB_Demo004GameMode::StartPlay()
 	}
 	EnsureMinimalWorldForBlankMap();
 	HideEngineTemplateFloor(World);
+
+	// 2026-09-12: DELIBERATELY NOT bootstrapping the default NavMesh instance here anymore.
+	// Root-caused via engine source (FRecastNavMeshGenerator::ConstructTiledNavMesh /
+	// CalcNavMeshProperties): a RecastNavMesh's tile pool capacity (maxTiles) is computed ONCE,
+	// the very first time the nav data is constructed, from whatever inclusion bounds exist AT
+	// THAT MOMENT - it is never recomputed later even as invokers register or bounds grow. Calling
+	// GetDefaultNavDataInstance(Create) here, at StartPlay - before any island exists and long
+	// before any Mannequin/invoker is placed - permanently locked maxTiles at 0 ("ConstructTiledNavMesh:
+	// Failed to create navmesh of size 0" in the log), so nothing could ever generate for the rest
+	// of the session no matter how many invokers registered afterward. Letting nav data creation
+	// happen lazily (bAutoCreateNavigationData's engine default is true) means it first gets
+	// constructed on demand - by which point real terrain and/or a real invoker location exists to
+	// compute a non-zero tile capacity from.
 #if !UE_BUILD_SHIPPING
 	IHDevViewRuntime::ApplyCloudsVisibilityToWorld(World);
 #endif
@@ -1164,6 +1181,43 @@ void AIH_WB_Demo004GameMode::StartPlay()
 		TEXT("P1C08: Spawned %d seed islands (count=%d, masterSeed=%d, tankDepthHalf=%.1f km, totalAcres=%d) in tank."),
 		SpawnedIslands.Num(), IslandCount, MasterSeed, RealmHalfExtentNSKm,
 		GI ? GI->GetTotalLandAcres() : 0);
+
+	// 2026-09-12: root cause, finally confirmed via engine source
+	// (UNavigationSystemV1::GetWorldBounds/FRecastNavMeshGenerator): bGenerateNavigationOnlyAroundNavigationInvokers
+	// only controls WHICH TILES get generated within an already-declared navigable region - it does
+	// NOT eliminate the need for at least one declared region to exist in the first place. Without a
+	// hand-placed ANavMeshBoundsVolume, UNavigationSystemV1::RegisteredNavBounds is permanently
+	// empty, so the tile pool's capacity computation (CalcNavMeshProperties) always resolves to
+	// maxTiles=0 ("ConstructTiledNavMesh: Failed to create navmesh of size 0") no matter when
+	// GetDefaultNavDataInstance(Create)/Build() is called or how many Mannequin invokers register -
+	// none of that is a substitute for a declared bounds region. This project has no fixed level to
+	// place a Volume in (the realm is procedurally regenerated after Play begins). AddNavigationBounds
+	// and AddNavigationBoundsUpdateRequest (the two direct-FBox APIs) are both protected, so instead
+	// spawn a real ANavMeshBoundsVolume at runtime (no BSP brush geometry needed - just force its
+	// BrushComponent's cached Bounds directly, which is what GetComponentsBoundingBox() reads), then
+	// call the actually-public UNavigationSystemV1::OnNavigationBoundsAdded(this volume) ourselves -
+	// the exact same call a placed Volume's own PostRegisterAllComponents() makes internally. Sized
+	// generously around the whole realm (up to ~105x65 km per Realm Seed panel); invoker-based
+	// generation still only builds tiles near actual units within this region either way.
+	if (UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World))
+	{
+		const FBox RealmBox(
+			FVector(-6000000.f, -6000000.f, -50000.f),
+			FVector(6000000.f, 6000000.f, 300000.f));
+		if (ANavMeshBoundsVolume* NavVolume = World->SpawnActor<ANavMeshBoundsVolume>(RealmBox.GetCenter(), FRotator::ZeroRotator))
+		{
+			if (UBrushComponent* Brush = NavVolume->GetBrushComponent())
+			{
+				Brush->Bounds = FBoxSphereBounds(RealmBox);
+			}
+			NavSys->OnNavigationBoundsAdded(NavVolume);
+		}
+
+		ANavigationData* NavData = NavSys->GetDefaultNavDataInstance(FNavigationSystem::Create);
+		NavSys->Build();
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("P1C08: Registered realm NavBounds + NavMesh instance %s"),
+			NavData ? TEXT("ready") : TEXT("FAILED TO CREATE - troop movement will not work"));
+	}
 
 	World->GetTimerManager().SetTimer(
 		BuoyantCubeSpawnTimer, this, &AIH_WB_Demo004GameMode::DeferredSpawnBuoyantCube, BuoyantCubeSpawnDelaySec, false);
@@ -1696,6 +1750,10 @@ void AIH_WB_Demo004GameMode::RegenerateSingleIsland(int32 IslandIndex)
 	}
 	const UIH_WB_Demo004GameInstance* GI = GetGameInstance<UIH_WB_Demo004GameInstance>();
 	const int32 MasterSeed = GI ? GI->GetMasterSeedInt() : 0;
+	// First Bake's welded/smoothed mesh is a snapshot of IslandMesh's PRE-regen shape — must be
+	// discarded before ApplyTankLayout rebuilds IslandMesh's sections underneath it, or the old
+	// baked mesh would keep rendering/colliding as stale, silently-wrong terrain.
+	Island->ResetFirstBake();
 	Island->ApplyTankLayout(
 		IslandIndex,
 		Island->GetSemiMajorAxisCm(),

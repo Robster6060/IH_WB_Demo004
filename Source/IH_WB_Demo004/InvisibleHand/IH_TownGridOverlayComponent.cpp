@@ -313,37 +313,6 @@ void UTownGridOverlayComponent::DrawOverlayData(
 				0,
 				2.f);
 		}
-
-#if ENABLE_DRAW_DEBUG
-		if (!bPreviewAlpha)
-		{
-			FVector LabelAnchor = Cell.CenterWorld;
-			if (bConformToTerrain)
-			{
-				IH_TownGridOverlayPrivate::TrySampleTerrainSurface(
-					World,
-					FVector2D(Cell.CenterWorld.X, Cell.CenterWorld.Y),
-					ReferenceZ,
-					OverlayLiftCm,
-					IgnoreActor,
-					LabelAnchor);
-			}
-			else
-			{
-				LabelAnchor.Z = ReferenceZ + OverlayLiftCm + 4.f;
-			}
-
-			DrawDebugString(
-				World,
-				LabelAnchor + FVector(0.f, 0.f, 120.f),
-				TEXT("CIV+SPD"),
-				nullptr,
-				FColor::Cyan,
-				0.f,
-				true,
-				1.2f);
-		}
-#endif
 	}
 }
 

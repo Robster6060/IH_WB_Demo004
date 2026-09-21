@@ -1560,6 +1560,14 @@ namespace IHInvisibleHandSpec
 	static constexpr int32 TerrainStampPaletteReservedSlotCount = 7;
 	static constexpr int32 TerrainStampPaletteSlotCapacity = 29;
 
+	// Soft, per-island (not per-Realm) concurrently-placed-but-not-yet-baked static-mesh Terrain
+	// Stamp limits (2026-09-09). Not a hard engine/Nanite constraint - Nanite/collision/tracking
+	// overhead all stay cheap well past these numbers - this is a tuning knob against Outliner
+	// clutter and per-island creative/visual redundancy. Smaller-footprint future stamp families
+	// may reasonably want a higher count later.
+	static constexpr int32 TerrainStampMeshWarnCountPerIsland = 40;
+	static constexpr int32 TerrainStampMeshHardStopCountPerIsland = 75;
+
 	inline bool IsCoastB2bWorldStampPaletteEnabled()
 	{
 		return bCoastB2b_WorldStampPaletteEnabled;

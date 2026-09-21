@@ -29,6 +29,10 @@ public class IH_WB_Demo004 : ModuleRules
 			"ProceduralMeshComponent",
 			"GeometryCore",
 			"GeometryFramework",
+			"GeometryScriptingCore",
+			// AAIController/UAIBlueprintHelperLibrary for Mannequin troop movement (SimpleMoveToLocation).
+			"AIModule",
+			"NavigationSystem",
 		});
 
 		PublicIncludePaths.AddRange(new string[] {

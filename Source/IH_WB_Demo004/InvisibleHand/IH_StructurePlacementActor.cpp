@@ -387,20 +387,12 @@ void AIH_StructurePlacementActor::ApplyPlacedDevVisualStyle()
 	CachedSourceMaterials.Reset();
 	MeshComponent->SetTranslucentSortPriority(0);
 
-	UMaterialInstanceDynamic* PlacedMID = IH_StructurePlacementPrivate::CreateDragGhostMaterial(this);
-	if (PlacedMID)
+	// 2026-09-14: per explicit user request, placed structures stay in the SAME translucent blue as
+	// the drag-preview ghost (previously this overrode CreateDragGhostMaterial's own GhostBlue with a
+	// fully opaque PlacedBlue/Opacity=1, which is why deselecting one always showed solid blue instead
+	// of staying transparent) - just keep the ghost material's own default look, no override.
+	if (UMaterialInstanceDynamic* PlacedMID = IH_StructurePlacementPrivate::CreateDragGhostMaterial(this))
 	{
-		static const FLinearColor PlacedBlue(0.1f, 0.35f, 0.95f, 1.f);
-		static const FName ColorNames[] = {
-			FName(TEXT("Color")), FName(TEXT("BaseColor")), FName(TEXT("TintColor")), FName(TEXT("Vector")),
-		};
-		for (const FName& ColorName : ColorNames)
-		{
-			PlacedMID->SetVectorParameterValue(ColorName, PlacedBlue);
-		}
-		PlacedMID->SetScalarParameterValue(FName(TEXT("Opacity")), 1.f);
-		PlacedMID->SetScalarParameterValue(FName(TEXT("Roughness")), 0.45f);
-
 		const int32 SlotCount = FMath::Max(1, MeshComponent->GetNumMaterials());
 		for (int32 SlotIndex = 0; SlotIndex < SlotCount; ++SlotIndex)
 		{
@@ -411,6 +403,104 @@ void AIH_StructurePlacementActor::ApplyPlacedDevVisualStyle()
 	MeshComponent->SetVisibility(true, true);
 	MeshComponent->SetHiddenInGame(false);
 	MeshComponent->MarkRenderStateDirty();
+}
+
+void AIH_StructurePlacementActor::SetStructureSelected(bool bSelected)
+{
+	if (bStructureSelected == bSelected || !MeshComponent)
+	{
+		return;
+	}
+	bStructureSelected = bSelected;
+
+	if (bStructureSelected)
+	{
+		if (CachedSourceMaterials.Num() == 0)
+		{
+			const int32 SlotCount = FMath::Max(1, MeshComponent->GetNumMaterials());
+			CachedSourceMaterials.Reset(SlotCount);
+			for (int32 SlotIndex = 0; SlotIndex < SlotCount; ++SlotIndex)
+			{
+				CachedSourceMaterials.Add(MeshComponent->GetMaterial(SlotIndex));
+			}
+		}
+
+		// 2026-09-14: per explicit user request, selected is a distinct but related translucent blue
+		// shade (not the amber this session used for Ship/Mannequin/Town Grid) - a brighter, more
+		// cyan-shifted blue than the base placed/ghost blue (0.12, 0.48, 1.0), same translucency.
+		if (UMaterialInstanceDynamic* MID = IH_StructurePlacementPrivate::CreateDragGhostMaterial(this))
+		{
+			static const FLinearColor SelectedBlue(0.25f, 0.85f, 1.f, 0.88f);
+			static const FName ColorNames[] = {
+				FName(TEXT("Color")), FName(TEXT("BaseColor")), FName(TEXT("TintColor")), FName(TEXT("Vector")),
+			};
+			for (const FName& ColorName : ColorNames)
+			{
+				MID->SetVectorParameterValue(ColorName, SelectedBlue);
+			}
+			const int32 SlotCount = FMath::Max(1, MeshComponent->GetNumMaterials());
+			for (int32 SlotIndex = 0; SlotIndex < SlotCount; ++SlotIndex)
+			{
+				MeshComponent->SetMaterial(SlotIndex, MID);
+			}
+		}
+	}
+	else
+	{
+		for (int32 SlotIndex = 0; SlotIndex < CachedSourceMaterials.Num(); ++SlotIndex)
+		{
+			MeshComponent->SetMaterial(SlotIndex, CachedSourceMaterials[SlotIndex]);
+		}
+		CachedSourceMaterials.Reset();
+	}
+	MeshComponent->MarkRenderStateDirty();
+}
+
+void AIH_StructurePlacementActor::BeginMoveDrag(const FVector& WorldPoint)
+{
+	bMoveDragActive = true;
+	MoveDragStartWorld = WorldPoint;
+	MoveDragStartActorLoc = GetActorLocation();
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("Structure '%s' BeginMoveDrag at %s (actor currently at %s)"),
+		*GetName(), *WorldPoint.ToString(), *MoveDragStartActorLoc.ToString());
+}
+
+void AIH_StructurePlacementActor::UpdateMoveDrag(const FVector& WorldPoint)
+{
+	if (!bMoveDragActive)
+	{
+		return;
+	}
+	const FVector Delta = WorldPoint - MoveDragStartWorld;
+	FVector NewLoc = MoveDragStartActorLoc;
+	NewLoc.X += Delta.X;
+	NewLoc.Y += Delta.Y;
+	SetActorLocation(NewLoc);
+}
+
+void AIH_StructurePlacementActor::EndMoveDrag()
+{
+	if (!bMoveDragActive)
+	{
+		return;
+	}
+	bMoveDragActive = false;
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("Structure '%s' EndMoveDrag - final location %s"),
+		*GetName(), *GetActorLocation().ToString());
+	AlignToTerrainCenter();
+}
+
+void AIH_StructurePlacementActor::ApplyYawStep(float DeltaDeg)
+{
+	if (FMath::IsNearlyZero(DeltaDeg))
+	{
+		return;
+	}
+	FRotator Rot = GetActorRotation();
+	Rot.Yaw = FMath::UnwindDegrees(Rot.Yaw + DeltaDeg);
+	SetActorRotation(Rot);
 }
 
 void AIH_StructurePlacementActor::AlignToTerrainCenter()

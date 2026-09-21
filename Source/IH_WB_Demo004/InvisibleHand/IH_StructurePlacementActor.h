@@ -71,6 +71,34 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "Invisible Hand|Structure")
 	void ApplyPlacedDevVisualStyle();
 
+	/**
+	 * 2026-09-13: selectable-actor-hierarchy - amber tint on select (mirrors Ship/Mannequin's own
+	 * select-tint pattern), caching whatever material is CURRENTLY active (the permanent dev-blue
+	 * from ApplyPlacedDevVisualStyle, not the original asset materials) and restoring exactly that
+	 * on deselect - same cache-current/restore-cached approach as the other selectable types.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Invisible Hand|Structure")
+	void SetStructureSelected(bool bSelected);
+
+	bool IsStructureSelected() const { return bStructureSelected; }
+
+	/**
+	 * 2026-09-14: Shift+Drag relocate / Shift+Wheel rotate, per canon parity with Town Grid/Terrain
+	 * Stamp - X/Y delta-move like Town Grid's own BeginMoveDrag/UpdateMoveDrag (simpler than Terrain
+	 * Stamp's depth-constrained version; Structures don't have a "sink into terrain" concept), then
+	 * re-align to the terrain surface on release so the door threshold still sits flush.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "Invisible Hand|Structure")
+	void BeginMoveDrag(const FVector& WorldPoint);
+	UFUNCTION(BlueprintCallable, Category = "Invisible Hand|Structure")
+	void UpdateMoveDrag(const FVector& WorldPoint);
+	UFUNCTION(BlueprintCallable, Category = "Invisible Hand|Structure")
+	void EndMoveDrag();
+	bool IsMoveDragActive() const { return bMoveDragActive; }
+
+	UFUNCTION(BlueprintCallable, Category = "Invisible Hand|Structure")
+	void ApplyYawStep(float DeltaDeg);
+
 	/** Remember palette item so mesh + placement math stay in sync during drag/drop. */
 	void SetPlacementPaletteItem(FName PaletteItemID);
 
@@ -99,9 +127,22 @@ protected:
 
 	FName ActivePaletteItemID;
 
+	// 2026-09-14 crash fix: this array previously had no UPROPERTY, so any UMaterialInstanceDynamic
+	// referenced ONLY through it (e.g. the dev-blue MID from ApplyPlacedDevVisualStyle, cached here
+	// the moment SetStructureSelected(true) first tints a structure) was invisible to GC and could
+	// be reclaimed while a structure sat selected for more than a few seconds - the very next
+	// deselect (SetStructureSelected(false)) then dereferenced a dangling/null pointer restoring it,
+	// crashing with EXCEPTION_ACCESS_VIOLATION (confirmed via Saved/Crashes minidump callstack).
+	// Mirrors AIH_P1C08_MannequinActor's own CachedSourceMaterials, which already had this UPROPERTY.
+	UPROPERTY(Transient)
 	TArray<TObjectPtr<UMaterialInterface>> CachedSourceMaterials;
 
 	bool bDragGhostVisualStyleActive = false;
+	bool bStructureSelected = false;
+
+	bool bMoveDragActive = false;
+	FVector MoveDragStartWorld = FVector::ZeroVector;
+	FVector MoveDragStartActorLoc = FVector::ZeroVector;
 
 	void ApplyStructureMesh();
 

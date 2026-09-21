@@ -5,6 +5,8 @@
 #include "Engine/World.h"
 #include "IH_WB_Demo004.h"
 #include "IHInvisibleHandDesignSpec.h"
+#include "IH_TerrainStampActor.h"
+#include "IH_WB_IslandActor.h"
 
 const FName UIH_P1C07_IslandCollisionSubsystem::IslandActorTag(TEXT("IH_Island"));
 
@@ -396,6 +398,20 @@ bool UIH_P1C07_IslandCollisionSubsystem::TrySampleIslandSurfaceAtXY(
 
 	for (const TPair<TWeakObjectPtr<AActor>, FIslandCompList>& Pair : RegisteredIslands)
 	{
+		// 2026-09-18 fix: Terrain Stamps register themselves as "IH_Island" surfaces once placed
+		// (RegisterWithIslandCollisionIfNeeded), so a stamp being relocated is present in this very
+		// map. IslandComp->LineTraceComponent() below traces directly against ONE component's body
+		// instance, which does NOT consult FCollisionQueryParams' ignore-actor list (that filtering
+		// only applies to broad-phase World->LineTrace* queries) - so passing IgnoreActor did nothing
+		// to stop a selected stamp from self-hitting its own mesh top as "ground," feeding an ever-
+		// climbing Z back into itself each tick ("pops upward to hover in air"). Skip the ignored
+		// actor's own registered entry explicitly here instead.
+		AActor* IslandOwner = Pair.Key.Get();
+		if (!IslandOwner || IslandOwner == IgnoreActor)
+		{
+			continue;
+		}
+
 		for (const TWeakObjectPtr<UPrimitiveComponent>& CompPtr : Pair.Value)
 		{
 			UPrimitiveComponent* IslandComp = CompPtr.Get();
@@ -435,7 +451,22 @@ bool UIH_P1C07_IslandCollisionSubsystem::TrySampleIslandSurfaceAtXY(
 	OutLocation = BestHit.ImpactPoint + BestHit.ImpactNormal.GetSafeNormal() * SurfaceLiftCm;
 	if (OutIslandActor)
 	{
-		*OutIslandActor = BestHit.GetActor();
+		AActor* HitActor = BestHit.GetActor();
+		// 2026-09-18: Terrain Stamps register themselves as "IH_Island" surfaces too (stacking is
+		// intentional canon - a stamp may plant against another already-placed stamp's surface rather
+		// than always sinking to the base island). Callers universally expect OutIslandActor to be the
+		// real AIH_WB_IslandActor (e.g. for "same island" gating and Cast<AIH_WB_IslandActor> checks),
+		// so resolve a stamp hit back to its own already-resolved target island instead of returning the
+		// stamp actor directly - this works through arbitrarily deep stacks since a stacked stamp's own
+		// TargetIsland was itself resolved the same way when IT was placed.
+		if (const AIH_TerrainStampActor* HitStamp = Cast<AIH_TerrainStampActor>(HitActor))
+		{
+			*OutIslandActor = HitStamp->GetTargetIsland();
+		}
+		else
+		{
+			*OutIslandActor = HitActor;
+		}
 	}
 	return true;
 }

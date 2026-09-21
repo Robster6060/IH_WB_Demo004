@@ -4,6 +4,8 @@
 
 #include "IH_ASLSlopeBiomeRow.h"
 #include "IH_BiomeTagZoneExemptionRow.h"
+#include "IH_BiomeRecommendationsRow.h"
+#include "IH_PGCMeshCatalogRow.h"
 
 #include "Engine/DataTable.h"
 #include "Misc/FileHelper.h"
@@ -19,6 +21,14 @@ namespace IH_WorldBuilderDataPaths
 		TEXT("/Game/InvisibleHand/Data/DataTables/DT_BiomeTagZoneExemption.DT_BiomeTagZoneExemption");
 	static constexpr TCHAR BiomeTagZoneExemptionCsv[] =
 		TEXT("InvisibleHand/Data/DataTables/DT_BiomeTagZoneExemption.csv");
+	static constexpr TCHAR BiomeRecommendationsAsset[] =
+		TEXT("/Game/InvisibleHand/Data/DataTables/DT_BiomeRecommendations.DT_BiomeRecommendations");
+	static constexpr TCHAR BiomeRecommendationsCsv[] =
+		TEXT("InvisibleHand/Data/DataTables/DT_BiomeRecommendations.csv");
+	static constexpr TCHAR PGCMeshCatalogAsset[] =
+		TEXT("/Game/InvisibleHand/Data/DataTables/DT_PGCMeshCatalog.DT_PGCMeshCatalog");
+	static constexpr TCHAR PGCMeshCatalogCsv[] =
+		TEXT("InvisibleHand/Data/DataTables/DT_PGCMeshCatalog.csv");
 }
 
 void UIH_WorldBuilderDataSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -36,6 +46,18 @@ void UIH_WorldBuilderDataSubsystem::Initialize(FSubsystemCollectionBase& Collect
 		IH_WorldBuilderDataPaths::BiomeTagZoneExemptionCsv,
 		FIHBiomeTagZoneExemptionRow::StaticStruct(),
 		TEXT("DT_BiomeTagZoneExemption"));
+
+	BiomeRecommendationsTable = LoadOrCreateDataTable(
+		IH_WorldBuilderDataPaths::BiomeRecommendationsAsset,
+		IH_WorldBuilderDataPaths::BiomeRecommendationsCsv,
+		FIHBiomeRecommendationsRow::StaticStruct(),
+		TEXT("DT_BiomeRecommendations"));
+
+	PGCMeshCatalogTable = LoadOrCreateDataTable(
+		IH_WorldBuilderDataPaths::PGCMeshCatalogAsset,
+		IH_WorldBuilderDataPaths::PGCMeshCatalogCsv,
+		FIHPGCMeshCatalogRow::StaticStruct(),
+		TEXT("DT_PGCMeshCatalog"));
 }
 
 UDataTable* UIH_WorldBuilderDataSubsystem::LoadOrCreateDataTable(

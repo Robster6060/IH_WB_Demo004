@@ -15,6 +15,44 @@ class USceneComponent;
 class UArrowComponent;
 class UIH_P1C08_MinimapSubsystem;
 class AIH_TerrainStampActor;
+class UHierarchicalInstancedStaticMeshComponent;
+class UStaticMesh;
+class UDynamicMeshComponent;
+
+/** One groundcover-eligible triangle, cached once per island so PGC proximity refreshes never have
+ * to re-classify terrain or re-walk DT_ASLSlopeBiome after the initial cache build.
+ * 2026-09-19: an earlier version of this cache also bucketed triangles into a fixed-size grid
+ * keyed by centroid, and copied each triangle's own DT_BiomeRecommendations groundcover tag list
+ * inline. Both were wrong: this project's terrain triangles average ~1,600 sq m each (confirmed
+ * via PIE log - Fougeres alone has 287,334 triangles across 462M sq m) - far bigger than any
+ * sane streaming-cell size, so centroid-only bucketing left most of a huge triangle's real
+ * footprint undiscoverable from the cells the player was actually standing in (root cause of PGC
+ * showing zero instances everywhere in PIE). And copying a TArray<FName> per triangle meant one
+ * heap allocation per triangle - ~600K of them across 3 islands - a real contributor to the
+ * reported memory pressure warning. Fixed by (a) storing BoundingRadiusCm so a proximity check can
+ * conservatively test "does this triangle's footprint possibly reach the stream radius", not just
+ * its centroid, and (b) storing only a shared BiomeRowIndex (resolved back to
+ * DT_BiomeRecommendations only for the handful of triangles actually near the camera each
+ * refresh), not a per-triangle tag copy. This is also closer to how UE's own PCG runtime
+ * generation actually works: a coarse streaming grid gates WHICH area is active, but the content
+ * within an active area is sampled fresh against the real surface, not indexed by a pre-bucketed
+ * grid sized independently of the source geometry. */
+struct FIHPGCEligibleTri
+{
+	FVector P0 = FVector::ZeroVector;
+	FVector P1 = FVector::ZeroVector;
+	FVector P2 = FVector::ZeroVector;
+	FVector Centroid = FVector::ZeroVector;
+	float AreaSqM = 0.f;
+	/** Max distance from Centroid to any of the 3 vertices - lets a proximity check conservatively
+	 * include a triangle whose centroid is just outside the stream radius but whose real footprint
+	 * still reaches it. */
+	float BoundingRadiusCm = 0.f;
+	/** Index into GetBiomeRowsSortedForClassification()'s Rows array - resolved back to a real
+	 * FIHASLSlopeBiomeRow/FIHBiomeRecommendationsRow only when this triangle is actually near the
+	 * camera, not cached per-triangle. */
+	int32 BiomeRowIndex = INDEX_NONE;
+};
 
 /**
  * Detachable IslandMesh + contiguous Sea Shelf WWF actor.
@@ -70,6 +108,29 @@ public:
 	 * sections in place (cheap material swap via BiomeSectionRowIndices, no mesh rebuild). */
 	void ApplyDevColorMode(IHDevViewRuntime::EIHDevColorMode Mode);
 	void RebuildCoastFromCachedHeightfield() {}
+	/** 2026-09-18: PGC round 1 - groundcover-only scatter, built lazily the first time PGC mode is
+	 * activated on this island (not eagerly on every generation) since it's an opt-in DEV
+	 * visualization, not mainline content. Reuses IslandMesh's already-built biome sections via
+	 * BiomeSectionRowIndices - no re-classification. Called from ApplyDevColorMode. */
+	void ApplyPGCScatterVisibility(bool bVisible);
+
+	/** First Bake (World Builder Phase Order Canon): welds IslandMesh's per-biome-row
+	 * UProceduralMeshComponent sections into one seamless UDynamicMeshComponent, smooths the
+	 * result (fixes the low-poly triangular-tiling look), and swaps rendering/collision over to
+	 * it. No Nanite, no native World Partition — see IH_WB_Phase_Order_Canon.md. Called
+	 * automatically the moment the player commits an island's position/rotation
+	 * (UIH_P1C08_CoastlineTuningSubsystem::ApplyActiveDraft). Safe to call again (e.g. after a
+	 * tuning-only commit) — always rebuilds BakedIslandMesh fresh from IslandMesh's current
+	 * sections, a pure function of that state with no hidden per-call randomness (Host-Authoritative
+	 * Game Map forward-compatibility, per canon doc). */
+	void RunFirstBake();
+	bool IsFirstBaked() const { return bFirstBaked; }
+	/** Reverts to IslandMesh's own rendering/collision, discarding BakedIslandMesh's stale content
+	 * (still resident, just hidden — RunFirstBake will overwrite it via SetMesh on the next bake).
+	 * Call before any in-place terrain regeneration (e.g. RegenerateSingleIsland) that rebuilds
+	 * IslandMesh's sections out from under an already-baked island — otherwise the old baked mesh
+	 * would keep rendering/colliding as the new terrain silently regenerates hidden underneath it. */
+	void ResetFirstBake();
 
 	// 2026-09-09: real bookkeeping now (was a no-op stub alongside the retired procedural
 	// height-grid path) - static-mesh stamps use this array for the concurrent-placed-stamp soft
@@ -105,6 +166,9 @@ protected:
 	void EnsureFeatureRibbonsBaked();
 	void RegisterCollision();
 	void UnregisterCollision();
+	void BuildPGCEligibilityCache();
+	void RefreshPGCGroundcoverProximity();
+	UHierarchicalInstancedStaticMeshComponent* GetOrCreatePGCGroundcoverHISM(UStaticMesh* Mesh);
 	FVector2D LocalCmToWorldCm(const FVector2D& LocalCm) const;
 	/**
 	 * Walk all closed contour components. OutLargestLocalCm = longest perimeter (MainCoast authority).
@@ -191,6 +255,57 @@ protected:
 	// every section in place via SetMaterial without re-classifying triangles or rebuilding geometry.
 	TArray<int32> BiomeSectionRowIndices;
 
+	/** PGC round 1: one HISM per distinct groundcover mesh actually scattered on this island, keyed
+	 * by the mesh's own path. Reused across proximity refreshes (cleared + repopulated, never
+	 * destroyed/recreated) so toggling PGC or wandering around doesn't churn components. */
+	UPROPERTY(Transient)
+	TMap<FName, TObjectPtr<UHierarchicalInstancedStaticMeshComponent>> PGCGroundcoverHISMs;
+
+	// 2026-09-19: PGC round 1 first shipped as a one-shot whole-island scatter; PIE testing showed
+	// that's the wrong architecture at this project's real island scale (hundreds of millions of
+	// m² eligible per island) - any instance budget safe enough to bound cost renders as sparse to
+	// invisible from ground level, since it has to spread across the WHOLE island at once. Replaced
+	// with camera-proximity streaming (same "cheap periodic timer + game-thread distance math, not
+	// per-Tick" pattern as AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating): eligible
+	// triangles are cached flat once (lazy, first PGC activation); each refresh does a linear
+	// distance scan (cheap - tens to low hundreds of thousands of plain FVector::Dist calls, no
+	// rendering/GPU work) and only the handful actually within PGCStreamRadiusCm of the camera get
+	// scattered, so local density can be visually real regardless of island size. See
+	// FIHPGCEligibleTri's own comment for why an earlier grid-bucketed version of this was wrong.
+	TArray<FIHPGCEligibleTri> PGCEligibleTris;
+	bool bPGCEligibilityCacheBuilt = false;
+	/** World-irrelevant sentinel far outside any real island so the very first refresh after PGC
+	 * activation always populates regardless of where the camera actually is. */
+	FVector LastPGCRefreshLocalPos = FVector(TNumericLimits<float>::Max());
+	/** Camera position at the PREVIOUS timer tick (not the previous actual rebuild) - lets
+	 * RefreshPGCGroundcoverProximity measure instantaneous camera speed and skip rebuilding while
+	 * the camera is flying fast (a deliberate zoom/relocate), leaving current instances frozen
+	 * as-is until it settles back to a normal exploring pace. */
+	FVector LastPGCTickLocalPos = FVector(TNumericLimits<float>::Max());
+	/** Accumulated time the camera has held a speed below PGCSettleSpeedCmPerSec, reset to 0 the
+	 * instant it exceeds that speed - a refresh is only allowed once this reaches
+	 * PGCSettleDurationSec ("redraw only when the viewport is steady"), not merely "not sprinting". */
+	float PGCTimeBelowSettleSpeedSec = 0.f;
+	FTimerHandle PGCProximityRefreshTimerHandle;
+
+	/** 2026-09-20: full-suspend layer on top of the settle gate above. The settle gate only ever
+	 * skips the EXPENSIVE rescatter branch — RefreshPGCGroundcoverProximity itself (one FApp::
+	 * HasFocus() call + one FVector::Dist) still fires every PGCProximityRefreshIntervalSec forever,
+	 * camera moving or not, window focused or not. This accumulates time the camera has been
+	 * stationary OR the window unfocused; once it crosses PGCIdleSuspendThresholdSec, the real
+	 * 0.5s timer is cleared outright (see SuspendPGCProximityTimer) and a much cheaper 1Hz watchdog
+	 * (CheckPGCIdleWatchdog) takes over just to detect when to resume. */
+	float PGCTimeIdleForSuspendSec = 0.f;
+	bool bPGCProximityTimerSuspended = false;
+	/** Focus state captured at the moment of suspension, so the watchdog only resumes on a real
+	 * focus-REGAINED transition rather than re-triggering every tick because focus was never lost
+	 * (the idle-while-still-focused case). */
+	bool bPGCWasFocusedAtSuspend = true;
+	FTimerHandle PGCIdleWatchdogTimerHandle;
+	void SuspendPGCProximityTimer();
+	void ResumePGCProximityTimer();
+	void CheckPGCIdleWatchdog();
+
 	TArray<float> HeightsMeters;
 	int32 SamplesPerSide = 0;
 	double HalfExtentMeters = 0.0;
@@ -203,6 +318,16 @@ protected:
 
 	bool bAslContourRibbonsBaked = false;
 	bool bFeatureRibbonsBaked = false;
+
+	/** First Bake output — one welded+smoothed UDynamicMeshComponent replacing IslandMesh's
+	 * per-section rendering/collision once RunFirstBake() has run. Created lazily (NewObject, not
+	 * CreateDefaultSubobject, mirroring GetOrCreatePGCGroundcoverHISM's pattern) since most islands
+	 * may sit uncommitted for a while before the player ever bakes them. IslandMesh itself is never
+	 * destroyed — hidden and collision-disabled only — so BuildPGCEligibilityCache and other code
+	 * reading its ProcMeshSections keeps working unchanged. */
+	UPROPERTY(Transient)
+	TObjectPtr<UDynamicMeshComponent> BakedIslandMesh;
+	bool bFirstBaked = false;
 
 	static bool bAslContourRibbonBakeDeferred;
 };

@@ -856,6 +856,12 @@ bool UIH_P1C08_IslandNavWidget::HandleScreenPointerDown(const FVector2D& ScreenA
 {
 	if (!IsPointOverPanel(ScreenAbsolute))
 	{
+		// 2026-09-18 diag: investigating "fly-to-island sometimes agnostic to click" - need to see
+		// whether a miss here is a genuine off-panel click or whether the panel's own known rect
+		// looks wrong at the time.
+		UE_LOG(LogTemp, Warning,
+			TEXT("IslandNav: HandleScreenPointerDown MISS at (%.0f,%.0f)"),
+			ScreenAbsolute.X, ScreenAbsolute.Y);
 		return false;
 	}
 	UE_LOG(LogTemp, Warning,

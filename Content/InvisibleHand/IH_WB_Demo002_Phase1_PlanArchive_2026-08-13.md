@@ -947,3 +947,11 @@ Source/IH_WB_Demo002/WorldBuilder/CellGraph/IHTerrainCellGraphPreviewActor.cpp
 4. Ask whether to commit this session's uncommitted preview-actor work
    (recommended, but a commit is an action to confirm, not assume).
 ```
+
+## Addendum (2026-09-19) — Phase order superseded; Stamps promoted ahead of Hydrology
+
+This doc's original Phase 1 sequencing (line 91) grouped "Landform Primitive stamp catalog
+fabrication" with Hydrology as co-equal items deferred until the terrain+sector substrate was
+solid. In practice, Terrain Stamps were fully built and are in heavy use, while Hydrology remains
+unstarted — noted here for the historical record, not silently corrected. Current canonical phase
+order: `Content/InvisibleHand/IH_WB_Phase_Order_Canon.md`.

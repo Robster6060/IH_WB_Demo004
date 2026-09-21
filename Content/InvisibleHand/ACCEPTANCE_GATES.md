@@ -1,3 +1,7 @@
+> **Superseded 2026-09-19.** This doc was written for the predecessor project `IH_WB_Heightmap`
+> (a different `.uproject`). For current World Builder phase order, see
+> `Content/InvisibleHand/IH_WB_Phase_Order_Canon.md`. Kept below as historical record.
+
 # IH_WB_Heightmap — Acceptance Gates
 
 **Juncture:** `juncture/ih-wb-heightmap-2026-08-07-azgaar-coast` @ `f88b331` (prior: `juncture/ih-wb-heightmap-2026-08-06` @ `3288ca5`)  

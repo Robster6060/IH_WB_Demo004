@@ -19,6 +19,12 @@ Forked from `IH_WB_Heightmap` (`D:\Projects\UE58Projects\IH_WB_Heightmap`, commi
 - Heightfield ensemble: `D:\Projects\CodexProjects\IH_CX_Demo001` (`FIHHeightfieldCoastGenerator`)
 - Azgaar: Fantasy Map Generator heightmap templates / generator
 
+## World Builder Phase Order
+
+See `Content/InvisibleHand/IH_WB_Phase_Order_Canon.md` for the accepted phase sequence
+(RealmSeed → First Bake → Terrain Stamps → Latitude → Hydrology/Final Bake → Sector Fabric)
+and the Nanite/World Partition bake architecture.
+
 ## Build
 
 Open `IH_WB_Demo002.uproject` in UE 5.8, or:

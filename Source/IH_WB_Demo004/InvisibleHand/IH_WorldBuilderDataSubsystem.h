@@ -34,6 +34,16 @@ public:
 	UFUNCTION(BlueprintPure, Category = "Invisible Hand|World Builder|Data")
 	UDataTable* GetBiomeTagZoneExemptionTable() const { return BiomeTagZoneExemptionTable; }
 
+	/** DT_BiomeRecommendations (2026-09-18) — per-biomeID PGC scatter recommendations (groundcover/
+	 * trees/rocks/plants/props tags), row struct FIHBiomeRecommendationsRow. */
+	UFUNCTION(BlueprintPure, Category = "Invisible Hand|World Builder|Data")
+	UDataTable* GetBiomeRecommendationsTable() const { return BiomeRecommendationsTable; }
+
+	/** DT_PGCMeshCatalog (2026-09-18) — resolves a DT_BiomeRecommendations tag to real static
+	 * mesh(es), row struct FIHPGCMeshCatalogRow. */
+	UFUNCTION(BlueprintPure, Category = "Invisible Hand|World Builder|Data")
+	UDataTable* GetPGCMeshCatalogTable() const { return PGCMeshCatalogTable; }
+
 private:
 	UDataTable* LoadOrCreateDataTable(
 		const TCHAR* AssetObjectPath,
@@ -46,4 +56,10 @@ private:
 
 	UPROPERTY()
 	TObjectPtr<UDataTable> BiomeTagZoneExemptionTable;
+
+	UPROPERTY()
+	TObjectPtr<UDataTable> BiomeRecommendationsTable;
+
+	UPROPERTY()
+	TObjectPtr<UDataTable> PGCMeshCatalogTable;
 };

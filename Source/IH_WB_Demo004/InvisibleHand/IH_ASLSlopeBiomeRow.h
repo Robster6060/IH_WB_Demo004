@@ -121,6 +121,37 @@ struct FIHASLSlopeBiomeRow : public FTableRowBase
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FString slopeRangeLabel;
 
+	/** 2026-09-20 (shared per-vertex-blended terrain material): per-row ground-texture blend
+	 * weights for PGC DEV View mode's naturalistic ground material (M_IH_IslandGroundNaturalistic).
+	 * Promoted from IH_WB_IslandActorPrivate::GetNaturalisticGroundWeights, which only bucketed by
+	 * terrainTier (every row in the same tier got identical weights) — now independently
+	 * artist-tunable per row. groundSandWeight/GrassWeight/DirtWeight/SnowWeight are the 4 ground-
+	 * tier weights (intended to sum to ~1); groundRockWeight is the slope-driven rock overlay
+	 * (0-1, blended on top of the tier weights, not part of that sum) — was
+	 * GetNaturalisticRockBlendAlpha, computed from this row's own minSlopeDeg/maxSlopeDeg midpoint.
+	 * All 48 rows were seeded with EXACTLY what that C++ logic already computed (a behavior-
+	 * preserving migration into data), so existing PGC visuals are unchanged until a row is
+	 * hand-tuned. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome|Ground Weights")
+	float groundSandWeight = 0.f;
+
+	/** See groundSandWeight. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome|Ground Weights")
+	float groundGrassWeight = 0.f;
+
+	/** See groundSandWeight. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome|Ground Weights")
+	float groundDirtWeight = 0.f;
+
+	/** See groundSandWeight. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome|Ground Weights")
+	float groundSnowWeight = 0.f;
+
+	/** Slope-driven rock overlay weight (0-1), blended on top of the 4 tier weights above — see
+	 * groundSandWeight's comment. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome|Ground Weights")
+	float groundRockWeight = 0.f;
+
 	/** Player/designer-facing label, e.g. "Highland Crags". */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Invisible Hand|ASL Slope Biome")
 	FText biomeName;

@@ -4,6 +4,9 @@
 
 #include "IH_P1C08_IslandNavSubsystem.h"
 #include "IH_WB_Demo004GameInstance.h"
+#include "IH_WB_Demo004GameMode.h"
+#include "IH_WB_IslandActor.h"
+#include "Engine/World.h"
 
 void UIH_P1C08_CoastlineTuningSubsystem::LoadActiveIslandFromSelection()
 {
@@ -54,6 +57,25 @@ void UIH_P1C08_CoastlineTuningSubsystem::ApplyActiveDraft()
 	// Apply committed transform before mesh rebuild so minimap coastline registers once at final pose.
 	NotifyManualTransformChanged(ActiveIslandIndex);
 	NotifyTuningChanged(ActiveIslandIndex);
+
+	// First Bake (World Builder Phase Order Canon): runs automatically the moment the player
+	// commits — this function is the one real commit chokepoint (unlike the OnManualTransformChanged
+	// broadcast above, which also fires on every live-preview tick during a drag). Safe to re-run on
+	// a later commit (e.g. tuning-only) — RunFirstBake always rebuilds from the island's current
+	// state, no accumulation.
+	if (UGameInstance* GI = GetGameInstance())
+	{
+		if (UWorld* World = GI->GetWorld())
+		{
+			if (AIH_WB_Demo004GameMode* GM = World->GetAuthGameMode<AIH_WB_Demo004GameMode>())
+			{
+				if (AIH_WB_IslandActor* Island = GM->GetSpawnedIsland(ActiveIslandIndex))
+				{
+					Island->RunFirstBake();
+				}
+			}
+		}
+	}
 }
 
 void UIH_P1C08_CoastlineTuningSubsystem::RevertActiveDraft()

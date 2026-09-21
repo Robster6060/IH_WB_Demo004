@@ -14,10 +14,23 @@
 #include "IHInvisibleHandDesignSpec.h"
 #include "IHDevViewRuntime.h"
 #include "IH_ASLSlopeBiomeRow.h"
+#include "IH_BiomeRecommendationsRow.h"
+#include "IH_PGCMeshCatalogRow.h"
 #include "IH_WorldBuilderDataSubsystem.h"
 #include "Components/ArrowComponent.h"
+#include "Components/HierarchicalInstancedStaticMeshComponent.h"
+#include "Components/DynamicMeshComponent.h"
+#include "UDynamicMesh.h"
+#include "GeometryScript/MeshRepairFunctions.h"
+#include "GeometryScript/MeshDeformFunctions.h"
+#include "GeometryScript/MeshNormalsFunctions.h"
+#include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "NavigationSystem.h"
 #include "ProceduralMeshComponent.h"
+#include "Camera/PlayerCameraManager.h"
+#include "Engine/StaticMesh.h"
+#include "TimerManager.h"
+#include "Misc/App.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
 #include "UObject/UObjectGlobals.h"
@@ -280,6 +293,26 @@ namespace IH_WB_IslandActorPrivate
 			}
 		}
 		return nullptr;
+	}
+
+	/** 2026-09-19: PGC DEV View mode's real ground material (M_IH_IslandGroundNaturalistic, built
+	 * via Scripts/build_island_ground_naturalistic_material.py) — blends real Sand/Grass/Dirt/Snow
+	 * ground textures per biome tier plus a universal per-pixel slope->Rock blend, replacing PGC's
+	 * old fallback to the same flat biomeColor swatch BANDS/BIOME use. */
+	static UMaterialInterface* LoadNaturalisticGroundParentMaterial()
+	{
+		return LoadObject<UMaterialInterface>(
+			nullptr, TEXT("/Game/InvisibleHand/Materials/M_IH_IslandGroundNaturalistic.M_IH_IslandGroundNaturalistic"));
+	}
+
+	/** 2026-09-20: BANDS/BIOME's shared material (M_IH_IslandFlatVertexColor, built via
+	 * Scripts/build_island_flat_vertexcolor_material.py) — VertexColor -> BaseColor directly, no
+	 * texture layers. Replaces LoadOpaqueLitParentMaterial's use of Epic's built-in
+	 * BasicShapeMaterial for these two modes, which has no VertexColor wiring at all. */
+	static UMaterialInterface* LoadFlatVertexColorParentMaterial()
+	{
+		return LoadObject<UMaterialInterface>(
+			nullptr, TEXT("/Game/InvisibleHand/Materials/M_IH_IslandFlatVertexColor.M_IH_IslandFlatVertexColor"));
 	}
 
 	/** DEV Contours/Features: opaque Color MID (never Flatten — translucent z-fight hides tints). */
@@ -1725,8 +1758,36 @@ namespace IH_WB_IslandActorPrivate
 		const FIHASLSlopeBiomeRow& Row,
 		IHDevViewRuntime::EIHDevColorMode Mode = IHDevViewRuntime::EIHDevColorMode::Bands)
 	{
+		if (!Outer)
+		{
+			return nullptr;
+		}
+
+		// 2026-09-19: PGC now gets a real naturalistic ground material (texture-blended per tier +
+		// per-pixel slope->Rock) instead of BANDS' flat biomeColor swatch. Falls through to the
+		// flat-color path below if the material asset isn't available for any reason — matching
+		// this project's "never render blank/broken" precedent — rather than failing outright.
+		if (Mode == IHDevViewRuntime::EIHDevColorMode::PGC)
+		{
+			if (UMaterialInterface* NaturalisticParent = LoadNaturalisticGroundParentMaterial())
+			{
+				if (UMaterialInstanceDynamic* NaturalisticMID = UMaterialInstanceDynamic::Create(NaturalisticParent, Outer))
+				{
+					// 2026-09-20: weights promoted to real per-row DT_ASLSlopeBiome columns (were
+					// GetNaturalisticGroundWeights/GetNaturalisticRockBlendAlpha, bucketed by
+					// terrainTier only) - see FIHASLSlopeBiomeRow::groundSandWeight's comment.
+					NaturalisticMID->SetScalarParameterValue(FName(TEXT("SandWeight")), Row.groundSandWeight);
+					NaturalisticMID->SetScalarParameterValue(FName(TEXT("GrassWeight")), Row.groundGrassWeight);
+					NaturalisticMID->SetScalarParameterValue(FName(TEXT("DirtWeight")), Row.groundDirtWeight);
+					NaturalisticMID->SetScalarParameterValue(FName(TEXT("SnowWeight")), Row.groundSnowWeight);
+					NaturalisticMID->SetScalarParameterValue(FName(TEXT("RockBlendAlpha")), Row.groundRockWeight);
+					return NaturalisticMID;
+				}
+			}
+		}
+
 		UMaterialInterface* Parent = LoadOpaqueLitParentMaterial();
-		if (!Parent || !Outer)
+		if (!Parent)
 		{
 			return nullptr;
 		}
@@ -1736,8 +1797,8 @@ namespace IH_WB_IslandActorPrivate
 			return nullptr;
 		}
 		// 2026-09-18: DEV View BIOME mode reads the finer per-biome chart color instead of the flat
-		// per-elevation-tier BANDS color; PGC has no distinct visual yet so it deliberately falls
-		// back to BANDS (biomeColor) rather than rendering blank/broken.
+		// per-elevation-tier BANDS color; PGC falls back to this flat BANDS color only if the
+		// naturalistic ground material above couldn't be loaded.
 		const bool bUseDetailColor = Mode == IHDevViewRuntime::EIHDevColorMode::Biome
 			&& !Row.biomeDetailColorHex.IsEmpty();
 		const FLinearColor BiomeColor = ParseBiomeHexColor(bUseDetailColor ? Row.biomeDetailColorHex : Row.biomeColor);
@@ -1775,6 +1836,102 @@ namespace IH_WB_IslandActorPrivate
 			return FLinearColor::Gray;
 		}
 		return FLinearColor::FromSRGBColor(FColor::FromHex(Hex));
+	}
+
+	/** 2026-09-20 (shared per-vertex-blended terrain material): one shared Material Instance for
+	 * the WHOLE island per Mode, replacing CreateIslandBiomeMaterial's one-per-SECTION pattern —
+	 * see this file's own comment on ApplyDtBiomeColorBands' shared-MID assignment loop for why
+	 * that per-section pattern was the actual root cause of every hard biome-color edge this
+	 * session chased. No per-row parameters are set here at all (Roughness/Specular/TileSizeCm stay
+	 * at the material's own authored defaults) — every value that used to vary per row (ground
+	 * weights, display color) now lives in per-vertex color data instead (see
+	 * GetVertexColorValueForRow/AccumulateVertexColorValue below), read directly by the shared
+	 * material's own VertexColor node. */
+	static UMaterialInstanceDynamic* CreateSharedIslandModeMaterial(
+		UObject* Outer, const IHDevViewRuntime::EIHDevColorMode Mode)
+	{
+		if (!Outer)
+		{
+			return nullptr;
+		}
+		if (Mode == IHDevViewRuntime::EIHDevColorMode::PGC)
+		{
+			if (UMaterialInterface* NaturalisticParent = LoadNaturalisticGroundParentMaterial())
+			{
+				return UMaterialInstanceDynamic::Create(NaturalisticParent, Outer);
+			}
+		}
+		if (UMaterialInterface* FlatParent = LoadFlatVertexColorParentMaterial())
+		{
+			if (UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(FlatParent, Outer))
+			{
+				MID->SetScalarParameterValue(FName(TEXT("Roughness")),
+					IHDevViewRuntime::IsGrabContrastEnabled() ? 0.96f : 0.92f);
+				MID->SetScalarParameterValue(FName(TEXT("Specular")),
+					IHDevViewRuntime::IsGrabContrastEnabled() ? 0.06f : 0.10f);
+				MID->SetScalarParameterValue(FName(TEXT("AlbedoScale")),
+					IHDevViewRuntime::IsGrabContrastEnabled() ? IHInvisibleHandSpec::TopographyGrabContrastAlbedoScale : 1.f);
+				return MID;
+			}
+		}
+		return nullptr;
+	}
+
+	/** The per-row value that gets baked into vertex color for the given Mode — PGC packs the 4
+	 * tunable ground weights (Snow is derived in-shader as saturate(1-R-G-B), see the material
+	 * script), BANDS/BIOME pack the already-gamma-decoded LINEAR display color directly (vertex
+	 * color's default read in a material is raw linear bytes, no further decode needed — matches
+	 * how these values are produced below). */
+	static FVector4 GetVertexColorValueForRow(const FIHASLSlopeBiomeRow& Row, const IHDevViewRuntime::EIHDevColorMode Mode)
+	{
+		if (Mode == IHDevViewRuntime::EIHDevColorMode::PGC)
+		{
+			return FVector4(Row.groundSandWeight, Row.groundGrassWeight, Row.groundDirtWeight, Row.groundRockWeight);
+		}
+		const bool bUseDetailColor = Mode == IHDevViewRuntime::EIHDevColorMode::Biome && !Row.biomeDetailColorHex.IsEmpty();
+		const FLinearColor Color = ParseBiomeHexColor(bUseDetailColor ? Row.biomeDetailColorHex : Row.biomeColor);
+		return FVector4(Color.R, Color.G, Color.B, 1.f);
+	}
+
+	/** Quantized-XY-position vertex-value accumulator — same 1cm-grid QuantizeVertexKey idiom as
+	 * ComputeSmoothedTriangleSlopesDeg/the file's own normal/height-smoothing passes, needed because
+	 * each Voronoi cell emits its own private copy of its boundary vertices (no shared index across
+	 * cells). Accumulating (not overwriting) per position is what lets a vertex touched by several
+	 * differently-classified triangles end up with the AVERAGE of their values — the actual
+	 * mechanism that makes former hard section boundaries blend smoothly once the GPU linearly
+	 * interpolates this per-vertex data across each triangle. */
+	static void AccumulateVertexColorValue(
+		TMap<FIntPoint, TPair<FVector4, int32>>& InOutAccum, const FVector& Position, const FVector4& Value)
+	{
+		constexpr double QuantCm = 1.0;
+		const FIntPoint Key(FMath::RoundToInt32(Position.X / QuantCm), FMath::RoundToInt32(Position.Y / QuantCm));
+		TPair<FVector4, int32>& Entry = InOutAccum.FindOrAdd(Key);
+		Entry.Key += Value;
+		Entry.Value += 1;
+	}
+
+	static FColor PackVertexColorValue(const FVector4& Value)
+	{
+		return FColor(
+			static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Value.X * 255.f), 0, 255)),
+			static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Value.Y * 255.f), 0, 255)),
+			static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Value.Z * 255.f), 0, 255)),
+			static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(Value.W * 255.f), 0, 255)));
+	}
+
+	static FColor SampleAccumulatedVertexColor(
+		const TMap<FIntPoint, TPair<FVector4, int32>>& Accum, const FVector& Position)
+	{
+		constexpr double QuantCm = 1.0;
+		const FIntPoint Key(FMath::RoundToInt32(Position.X / QuantCm), FMath::RoundToInt32(Position.Y / QuantCm));
+		if (const TPair<FVector4, int32>* Entry = Accum.Find(Key))
+		{
+			if (Entry->Value > 0)
+			{
+				return PackVertexColorValue(Entry->Key / static_cast<float>(Entry->Value));
+			}
+		}
+		return FColor::Black;
 	}
 
 	/** Resolves the live DT_ASLSlopeBiome rows once per island build (not per-triangle) — Outer
@@ -1858,19 +2015,214 @@ namespace IH_WB_IslandActorPrivate
 		return SlopeAgnosticIndex != INDEX_NONE ? SlopeAgnosticIndex : NearestAslOnlyIndex;
 	}
 
-	/** Per-triangle DT biome match, using real face geometry (average elevation + true face-normal
-	 * slope angle in degrees) rather than per-vertex voting — DT rows are hard-bounded bands, not
-	 * smoothstep-blended tiers, so a single face-level sample is enough and needs no separate
-	 * cliff-force/summit-override special cases (those existed only to compensate for the old
-	 * system's mushy blending; real per-row ASL+slope ranges already cover steep faces and summits
-	 * directly, e.g. Apex Caps 2201-2400m/81-90 deg, Volcanic Rim, the Ore Escarpment rows). */
+	/** Raw single-triangle face-normal slope in degrees (waterline-clamped like the classification
+	 * path itself). Shared by ComputeSmoothedTriangleSlopesDeg's neighbor-averaging pre-pass and
+	 * (indirectly, via that pre-pass's output) ClassifyTriangleBiomeRow, so both always agree on
+	 * exactly how a single triangle's own slope is measured. */
+	static float ComputeTriangleFaceSlopeDeg(
+		const FVector& P0, const FVector& P1, const FVector& P2, const bool bWaterlineClamp)
+	{
+		const float Z0 = bWaterlineClamp ? FMath::Max(P0.Z, 0.f) : P0.Z;
+		const float Z1 = bWaterlineClamp ? FMath::Max(P1.Z, 0.f) : P1.Z;
+		const float Z2 = bWaterlineClamp ? FMath::Max(P2.Z, 0.f) : P2.Z;
+
+		const FVector C0(P0.X, P0.Y, Z0);
+		const FVector C1(P1.X, P1.Y, Z1);
+		const FVector C2(P2.X, P2.Y, Z2);
+		const FVector FaceCross = FVector::CrossProduct(C1 - C0, C2 - C0);
+		const float FaceCrossLen = FaceCross.Size();
+		if (FaceCrossLen <= KINDA_SMALL_NUMBER)
+		{
+			return 0.f;
+		}
+		const float CosSlope = FMath::Clamp(FMath::Abs(FaceCross.Z / FaceCrossLen), 0.f, 1.f);
+		return FMath::RadiansToDegrees(FMath::Acos(CosSlope));
+	}
+
+	/** 2026-09-20: fixes a confirmed classification-noise bug — BANDS mode (elevation-tier color
+	 * only) reads clean at every camera vantage tested, while BIOME/PGC (both slope-dependent) show
+	 * a persistent salt-and-pepper speckle/hard-edge pattern at the SAME vantages, on the SAME mesh
+	 * geometry. Root cause: a single triangle's own raw face-normal slope is a noisy sample of the
+	 * real local terrain slope on this coarse (~1,600 sq m/triangle), per-Voronoi-cell-fan
+	 * triangulation — two edge-adjacent triangles covering the same visual ridge can land in very
+	 * different classified rows purely from how the triangulation happened to cut that patch, not
+	 * from any real terrain difference. Neither of the two mesh/material fixes tried earlier this
+	 * session (heavier position-smoothing, the material's own smoothed-per-pixel RockBlendAlpha
+	 * term) touched this, because the actual noise is upstream of both, in classification itself.
+	 *
+	 * Averages each triangle's raw slope with its immediate edge-adjacent neighbors only (a "1-ring"
+	 * mean, typically self + up to 3 neighbors) - deliberately more conservative than reusing the
+	 * existing fully-smoothed per-vertex lighting normals just below in this file, which was already
+	 * tried for a related purpose and rejected for washing out real steep terrain almost entirely
+	 * (averages over every triangle sharing a vertex, not just direct edge neighbors). Real,
+	 * large-scale slope transitions (an actual cliff next to an actual gentle slope) still produce a
+	 * real hard transition after this - only the artificial triangulation-vs-terrain noise is
+	 * removed.
+	 *
+	 * Each Voronoi cell emits its own private copy of its boundary vertices (BuildMeshesFromCellGraph
+	 * comment, "each cell still emits its own copy of every boundary point") - cross-cell triangle
+	 * adjacency does NOT exist via shared vertex index, only matching XY position, so this reuses the
+	 * exact QuantizeVertexKey idiom (1cm-grid FIntPoint) already established just below in this file
+	 * for the same reason. */
+	static TArray<float> ComputeSmoothedTriangleSlopesDeg(
+		const TArray<FVector>& Vertices, const TArray<int32>& Triangles, const bool bWaterlineClamp)
+	{
+		const int32 NumTris = Triangles.Num() / 3;
+		TArray<float> RawSlopeDeg;
+		RawSlopeDeg.SetNumUninitialized(NumTris);
+
+		auto QuantizeVertexKey = [](const FVector2D& P) -> FIntPoint
+		{
+			constexpr double QuantCm = 1.0;
+			return FIntPoint(FMath::RoundToInt32(P.X / QuantCm), FMath::RoundToInt32(P.Y / QuantCm));
+		};
+		auto EdgeKey = [](int32 A, int32 B) -> uint64
+		{
+			if (A > B)
+			{
+				Swap(A, B);
+			}
+			return (static_cast<uint64>(static_cast<uint32>(A)) << 32) | static_cast<uint32>(B);
+		};
+
+		TMap<FIntPoint, int32> PositionToId;
+		TMap<uint64, TArray<int32>> EdgeToTriangles;
+		// This triangle's 3 (position-based) vertex IDs, cached from the build pass below so the
+		// smoothing pass never needs to re-quantize/re-look-up a vertex position a second time.
+		TArray<FIntVector> TriPositionIds;
+		TriPositionIds.SetNumUninitialized(NumTris);
+
+		for (int32 TriIdx = 0; TriIdx < NumTris; ++TriIdx)
+		{
+			const int32 TriBase = TriIdx * 3;
+			const int32 I0 = Triangles[TriBase];
+			const int32 I1 = Triangles[TriBase + 1];
+			const int32 I2 = Triangles[TriBase + 2];
+			if (!Vertices.IsValidIndex(I0) || !Vertices.IsValidIndex(I1) || !Vertices.IsValidIndex(I2))
+			{
+				RawSlopeDeg[TriIdx] = 0.f;
+				TriPositionIds[TriIdx] = FIntVector(INDEX_NONE, INDEX_NONE, INDEX_NONE);
+				continue;
+			}
+			RawSlopeDeg[TriIdx] = ComputeTriangleFaceSlopeDeg(
+				Vertices[I0], Vertices[I1], Vertices[I2], bWaterlineClamp);
+
+			int32 PosIds[3];
+			const int32 VertIdx[3] = {I0, I1, I2};
+			for (int32 k = 0; k < 3; ++k)
+			{
+				const FIntPoint Key = QuantizeVertexKey(FVector2D(Vertices[VertIdx[k]].X, Vertices[VertIdx[k]].Y));
+				const int32* Found = PositionToId.Find(Key);
+				PosIds[k] = Found ? *Found : PositionToId.Add(Key, PositionToId.Num());
+			}
+			TriPositionIds[TriIdx] = FIntVector(PosIds[0], PosIds[1], PosIds[2]);
+			for (int32 k = 0; k < 3; ++k)
+			{
+				EdgeToTriangles.FindOrAdd(EdgeKey(PosIds[k], PosIds[(k + 1) % 3])).Add(TriIdx);
+			}
+		}
+
+		// Precompute each triangle's neighbor list ONCE (not per iteration) - reused across every
+		// diffusion pass below.
+		TArray<TArray<int32>> NeighborsPerTri;
+		NeighborsPerTri.SetNum(NumTris);
+		int32 NumZeroNeighborTris = 0;
+		int64 SumCount = 0;
+		for (int32 TriIdx = 0; TriIdx < NumTris; ++TriIdx)
+		{
+			const FIntVector& PosIds = TriPositionIds[TriIdx];
+			if (PosIds.X == INDEX_NONE)
+			{
+				++NumZeroNeighborTris;
+				SumCount += 1;
+				continue;
+			}
+			const int32 PosIdsArr[3] = {PosIds.X, PosIds.Y, PosIds.Z};
+			for (int32 k = 0; k < 3; ++k)
+			{
+				const uint64 Key = EdgeKey(PosIdsArr[k], PosIdsArr[(k + 1) % 3]);
+				if (const TArray<int32>* Neighbors = EdgeToTriangles.Find(Key))
+				{
+					for (const int32 NeighborTriIdx : *Neighbors)
+					{
+						if (NeighborTriIdx != TriIdx)
+						{
+							NeighborsPerTri[TriIdx].Add(NeighborTriIdx);
+						}
+					}
+				}
+			}
+			if (NeighborsPerTri[TriIdx].Num() == 0)
+			{
+				++NumZeroNeighborTris;
+			}
+			SumCount += 1 + NeighborsPerTri[TriIdx].Num();
+		}
+
+		// 2026-09-20: a single 1-ring average (PIE-confirmed via diagnostic logging: 0% triangles
+		// with no matched neighbor, ~4 samples/triangle, real avg 7-8 deg / max ~60 deg shift) still
+		// wasn't enough to reliably beat several DT_ASLSlopeBiome rows' narrow slope bands (some as
+		// tight as 9 deg, e.g. Apex Caps 81-90) - adjacent triangles kept landing in different rows
+		// even after real, substantial smoothing. Diffusing the SAME 1-ring average over several
+		// iterations (each pass smoothing the PREVIOUS pass's output, not re-reading raw values)
+		// widens the effective smoothing radius gradually - the exact "NumIterations" idiom this
+		// project already uses for First Bake's mesh-position smoothing - without ever taking the one
+		// wide jump (full vertex-shared neighborhood) already rejected for washing out real slope.
+		constexpr int32 SlopeSmoothingIterations = 6;
+		TArray<float> CurrentSlopeDeg = RawSlopeDeg;
+		for (int32 Iter = 0; Iter < SlopeSmoothingIterations; ++Iter)
+		{
+			TArray<float> NextSlopeDeg;
+			NextSlopeDeg.SetNumUninitialized(NumTris);
+			for (int32 TriIdx = 0; TriIdx < NumTris; ++TriIdx)
+			{
+				float Sum = CurrentSlopeDeg[TriIdx];
+				int32 Count = 1;
+				for (const int32 NeighborTriIdx : NeighborsPerTri[TriIdx])
+				{
+					Sum += CurrentSlopeDeg[NeighborTriIdx];
+					++Count;
+				}
+				NextSlopeDeg[TriIdx] = Sum / static_cast<float>(Count);
+			}
+			CurrentSlopeDeg = MoveTemp(NextSlopeDeg);
+		}
+
+		if (NumTris > 0)
+		{
+			double SumAbsDeltaDeg = 0.0;
+			float MaxAbsDeltaDeg = 0.f;
+			for (int32 TriIdx = 0; TriIdx < NumTris; ++TriIdx)
+			{
+				const float AbsDeltaDeg = FMath::Abs(CurrentSlopeDeg[TriIdx] - RawSlopeDeg[TriIdx]);
+				SumAbsDeltaDeg += AbsDeltaDeg;
+				MaxAbsDeltaDeg = FMath::Max(MaxAbsDeltaDeg, AbsDeltaDeg);
+			}
+			UE_LOG(LogIH_WB_Demo004, Log,
+				TEXT("Slope smoothing diag: %d tris, %d (%.1f%%) with ZERO matched neighbors, ")
+				TEXT("avg neighbor count (incl self)=%.2f, %d iterations, avg |smoothed-raw|=%.2f deg, max |delta|=%.2f deg."),
+				NumTris, NumZeroNeighborTris, 100.0 * NumZeroNeighborTris / NumTris,
+				static_cast<double>(SumCount) / NumTris, SlopeSmoothingIterations,
+				SumAbsDeltaDeg / NumTris, MaxAbsDeltaDeg);
+		}
+		return CurrentSlopeDeg;
+	}
+
+	/** Per-triangle DT biome match, using real face geometry (average elevation + neighbor-smoothed
+	 * face-normal slope angle in degrees, see ComputeSmoothedTriangleSlopesDeg) rather than per-vertex
+	 * voting — DT rows are hard-bounded bands, not smoothstep-blended tiers, so a single face-level
+	 * sample is enough and needs no separate cliff-force/summit-override special cases (those existed
+	 * only to compensate for the old system's mushy blending; real per-row ASL+slope ranges already
+	 * cover steep faces and summits directly, e.g. Apex Caps 2201-2400m/81-90 deg, Volcanic Rim, the
+	 * Ore Escarpment rows). */
 	static int32 ClassifyTriangleBiomeRow(
 		const TArray<const FIHASLSlopeBiomeRow*>& Rows,
 		const TArray<FVector>& Vertices,
 		const int32 I0,
 		const int32 I1,
 		const int32 I2,
-		const bool bWaterlineClamp)
+		const bool bWaterlineClamp,
+		const float SmoothedSlopeDeg)
 	{
 		if (!Vertices.IsValidIndex(I0) || !Vertices.IsValidIndex(I1) || !Vertices.IsValidIndex(I2))
 		{
@@ -1899,20 +2251,8 @@ namespace IH_WB_IslandActorPrivate
 		const float Z1 = bWaterlineClamp ? FMath::Max(P1.Z, 0.f) : P1.Z;
 		const float Z2 = bWaterlineClamp ? FMath::Max(P2.Z, 0.f) : P2.Z;
 
-		const FVector C0(P0.X, P0.Y, Z0);
-		const FVector C1(P1.X, P1.Y, Z1);
-		const FVector C2(P2.X, P2.Y, Z2);
-		const FVector FaceCross = FVector::CrossProduct(C1 - C0, C2 - C0);
-		const float FaceCrossLen = FaceCross.Size();
-		float SlopeDeg = 0.f;
-		if (FaceCrossLen > KINDA_SMALL_NUMBER)
-		{
-			const float CosSlope = FMath::Clamp(FMath::Abs(FaceCross.Z / FaceCrossLen), 0.f, 1.f);
-			SlopeDeg = FMath::RadiansToDegrees(FMath::Acos(CosSlope));
-		}
-
 		const float AvgZmeters = (Z0 + Z1 + Z2) / 3.f / 100.f;
-		return ClassifyBiomeRowIndex(Rows, AvgZmeters, SlopeDeg);
+		return ClassifyBiomeRowIndex(Rows, AvgZmeters, SmoothedSlopeDeg);
 	}
 
 	/** DT-driven biome-color island appearance (IH-DEC-052 revised Phase 2) — replaces the old
@@ -1963,13 +2303,43 @@ namespace IH_WB_IslandActorPrivate
 			}
 		}
 
+		// Neighbor-averaged slope input for classification - see ComputeSmoothedTriangleSlopesDeg's
+		// own comment for why a single triangle's raw slope alone is too noisy on this mesh.
+		const TArray<float> SmoothedSlopeDeg =
+			ComputeSmoothedTriangleSlopesDeg(Vertices, Triangles, bWaterlineClamp);
+
 		TMap<int32, TArray<int32>> RowTriangles;
+		// 2026-09-20 (shared per-vertex-blended terrain material): accumulated alongside
+		// classification in the SAME loop - see GetVertexColorValueForRow/AccumulateVertexColorValue's
+		// own comments. This (not per-section flat materials) is what makes former hard biome-color
+		// edges blend smoothly - every triangle still classifies into a row exactly as before (for
+		// PGC groundcover/collision/section bookkeeping), but the RENDERED color/weight is now a
+		// smooth per-vertex average instead of a per-section constant.
+		TMap<FIntPoint, TPair<FVector4, int32>> ColorAccum;
+		// TEMP DIAGNOSTIC (2026-09-20, peak classification check): tracks the single highest-Z
+		// triangle seen (classified or not) so we can directly confirm whether the actual summit
+		// vertex is classifying into the row its AvgZmeters/slope should map to, independent of any
+		// visual/texture interpretation.
+		float DiagMaxZmetersSeen = -FLT_MAX;
+		int32 DiagMaxZmetersRowIdx = INDEX_NONE;
+		float DiagMaxZmetersSlopeDeg = 0.f;
 		for (int32 TriBase = 0; TriBase + 2 < Triangles.Num(); TriBase += 3)
 		{
 			const int32 I0 = Triangles[TriBase];
 			const int32 I1 = Triangles[TriBase + 1];
 			const int32 I2 = Triangles[TriBase + 2];
-			const int32 RowIdx = ClassifyTriangleBiomeRow(Rows, Vertices, I0, I1, I2, bWaterlineClamp);
+			const int32 RowIdx = ClassifyTriangleBiomeRow(
+				Rows, Vertices, I0, I1, I2, bWaterlineClamp, SmoothedSlopeDeg[TriBase / 3]);
+			if (Vertices.IsValidIndex(I0) && Vertices.IsValidIndex(I1) && Vertices.IsValidIndex(I2))
+			{
+				const float TriAvgZmeters = (Vertices[I0].Z + Vertices[I1].Z + Vertices[I2].Z) / 3.f / 100.f;
+				if (TriAvgZmeters > DiagMaxZmetersSeen)
+				{
+					DiagMaxZmetersSeen = TriAvgZmeters;
+					DiagMaxZmetersRowIdx = RowIdx;
+					DiagMaxZmetersSlopeDeg = SmoothedSlopeDeg[TriBase / 3];
+				}
+			}
 			if (RowIdx == INDEX_NONE)
 			{
 				continue;
@@ -1985,9 +2355,67 @@ namespace IH_WB_IslandActorPrivate
 			RowTris.Add(I1);
 			RowTris.Add(I2);
 			++OutClassifiedTriCount;
+
+			const FVector4 Value = GetVertexColorValueForRow(*Rows[RowIdx], Mode);
+			if (Vertices.IsValidIndex(I0)) { AccumulateVertexColorValue(ColorAccum, Vertices[I0], Value); }
+			if (Vertices.IsValidIndex(I1)) { AccumulateVertexColorValue(ColorAccum, Vertices[I1], Value); }
+			if (Vertices.IsValidIndex(I2)) { AccumulateVertexColorValue(ColorAccum, Vertices[I2], Value); }
+		}
+
+		TArray<FColor> VertexColors;
+		VertexColors.SetNumUninitialized(MeshVerts.Num());
+		for (int32 VertIdx = 0; VertIdx < MeshVerts.Num(); ++VertIdx)
+		{
+			VertexColors[VertIdx] = SampleAccumulatedVertexColor(ColorAccum, MeshVerts[VertIdx]);
+		}
+
+		// TEMP DIAGNOSTIC (2026-09-20, peak classification check): what did the single highest
+		// vertex on this island actually classify as, and what ground weights does that row carry?
+		{
+			if (DiagMaxZmetersRowIdx != INDEX_NONE && Rows.IsValidIndex(DiagMaxZmetersRowIdx))
+			{
+				const FIHASLSlopeBiomeRow& PeakRow = *Rows[DiagMaxZmetersRowIdx];
+				UE_LOG(LogIH_WB_Demo004, Log,
+					TEXT("PeakClassify diag: mode=%d, peakZm=%.1f, peakSlopeDeg=%.1f -> row=%s (biomeName=%s, aslRange=[%.0f,%.0f], sandW=%.2f grassW=%.2f dirtW=%.2f snowW=%.2f rockW=%.2f)"),
+					static_cast<int32>(Mode), DiagMaxZmetersSeen, DiagMaxZmetersSlopeDeg,
+					*PeakRow.biomeID.ToString(), *PeakRow.biomeName.ToString(),
+					PeakRow.aslLowerM, PeakRow.aslUpperM,
+					PeakRow.groundSandWeight, PeakRow.groundGrassWeight, PeakRow.groundDirtWeight,
+					PeakRow.groundSnowWeight, PeakRow.groundRockWeight);
+			}
+			else
+			{
+				UE_LOG(LogIH_WB_Demo004, Log,
+					TEXT("PeakClassify diag: mode=%d, peakZm=%.1f -> UNCLASSIFIED (INDEX_NONE)"),
+					static_cast<int32>(Mode), DiagMaxZmetersSeen);
+			}
+		}
+
+		// TEMP DIAGNOSTIC (2026-09-20): PIE showed uniform pale/white terrain in every DEV View
+		// mode after the shared-material change - logging actual computed byte values and accum
+		// stats directly rather than guessing again.
+		{
+			int32 NumBlack = 0;
+			int64 SumR = 0, SumG = 0, SumB = 0, SumA = 0;
+			for (const FColor& C : VertexColors)
+			{
+				if (C == FColor::Black) { ++NumBlack; }
+				SumR += C.R; SumG += C.G; SumB += C.B; SumA += C.A;
+			}
+			const int32 N = FMath::Max(1, VertexColors.Num());
+			UE_LOG(LogIH_WB_Demo004, Log,
+				TEXT("VertexColor diag: mode=%d, %d verts, %d (%.1f%%) black, accumMapSize=%d, avg RGBA=(%.1f,%.1f,%.1f,%.1f)"),
+				static_cast<int32>(Mode), VertexColors.Num(), NumBlack, 100.0 * NumBlack / N, ColorAccum.Num(),
+				static_cast<double>(SumR) / N, static_cast<double>(SumG) / N,
+				static_cast<double>(SumB) / N, static_cast<double>(SumA) / N);
 		}
 
 		Mesh->ClearAllMeshSections();
+
+		// One shared Material Instance for the WHOLE island (not one per section) - see
+		// CreateSharedIslandModeMaterial's own comment for why this is the actual fix.
+		UMaterialInstanceDynamic* SharedMid = CreateSharedIslandModeMaterial(Outer, Mode);
+		UE_LOG(LogIH_WB_Demo004, Log, TEXT("VertexColor diag: SharedMid=%s"), SharedMid ? TEXT("valid") : TEXT("NULL"));
 
 		// Shared vert buffers; per-matched-row index lists. Collision on every section (unitary walk).
 		int32 SectionIdx = 0;
@@ -1999,8 +2427,6 @@ namespace IH_WB_IslandActorPrivate
 				continue;
 			}
 
-			TArray<FColor> DummyColors;
-			DummyColors.Init(FColor::White, MeshVerts.Num());
 			// 2026-09-19 perf fix: bCreateCollision=true here used to mean EVERY CreateMeshSection call
 			// triggered UProceduralMeshComponent::UpdateCollision() -> CreatePhysicsMeshes(), a full
 			// synchronous re-cook of the AGGREGATE collision from every section added so far (confirmed
@@ -2012,10 +2438,10 @@ namespace IH_WB_IslandActorPrivate
 			// triangle count being unchanged. Defer collision to a single UpdateCollision() call after
 			// the whole loop instead (see below) - same final collision, cooked once.
 			Mesh->CreateMeshSection(
-				SectionIdx, MeshVerts, RowTris, Normals, UV0, DummyColors, Tangents, false);
-			if (UMaterialInstanceDynamic* Mid = CreateIslandBiomeMaterial(Outer, *Rows[Pair.Key], Mode))
+				SectionIdx, MeshVerts, RowTris, Normals, UV0, VertexColors, Tangents, false);
+			if (SharedMid)
 			{
-				Mesh->SetMaterial(SectionIdx, Mid);
+				Mesh->SetMaterial(SectionIdx, SharedMid);
 			}
 			OutSectionRowIndices.Add(Pair.Key);
 			++SectionIdx;
@@ -2047,12 +2473,12 @@ namespace IH_WB_IslandActorPrivate
 			}
 			if (DryTris.Num() >= 3)
 			{
-				TArray<FColor> DummyColors;
-				DummyColors.Init(FColor::White, MeshVerts.Num());
-				Mesh->CreateMeshSection(0, MeshVerts, DryTris, Normals, UV0, DummyColors, Tangents, false);
-				if (UMaterialInstanceDynamic* Mid = CreateIslandBiomeMaterial(Outer, *Rows[0], Mode))
+				TArray<FColor> FallbackColors;
+				FallbackColors.Init(PackVertexColorValue(GetVertexColorValueForRow(*Rows[0], Mode)), MeshVerts.Num());
+				Mesh->CreateMeshSection(0, MeshVerts, DryTris, Normals, UV0, FallbackColors, Tangents, false);
+				if (SharedMid)
 				{
-					Mesh->SetMaterial(0, Mid);
+					Mesh->SetMaterial(0, SharedMid);
 				}
 				OutSectionRowIndices.Add(0);
 			}
@@ -2288,17 +2714,585 @@ void AIH_WB_IslandActor::ApplyDevColorMode(const IHDevViewRuntime::EIHDevColorMo
 	{
 		return;
 	}
+	// 2026-09-20 (shared per-vertex-blended terrain material): post-First-Bake, IslandMesh's PMC
+	// sections are hidden and BakedIslandMesh (a UDynamicMeshComponent) renders in their place, but
+	// RunFirstBake doesn't yet carry per-vertex color data into that mesh at all (a separate,
+	// explicitly-flagged follow-up) - so the baked case keeps the OLD one-MID-per-section behavior
+	// (still correct, just not smoothly blended) rather than silently doing nothing. The un-baked
+	// case (the common path - none of this session's testing involved a baked island) gets the real
+	// fix: re-sample every section's vertex colors from a fresh cross-section accumulation and
+	// re-issue via UpdateMeshSection (attribute-only update, no topology/collision rebuild), plus
+	// one shared MID for the whole island instead of one per section.
+	if (bFirstBaked && BakedIslandMesh)
+	{
+		for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
+		{
+			if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
+			{
+				continue;
+			}
+			if (UMaterialInstanceDynamic* Mid = IH_WB_IslandActorPrivate::CreateIslandBiomeMaterial(
+				this, *Rows[BiomeSectionRowIndices[Section]], Mode))
+			{
+				BakedIslandMesh->SetMaterial(Section, Mid);
+			}
+		}
+	}
+	else
+	{
+		TMap<FIntPoint, TPair<FVector4, int32>> ColorAccum;
+		int32 NumSectionsSkippedNoRow = 0;
+		int32 NumSectionsSkippedNoProc = 0;
+		for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
+		{
+			if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
+			{
+				++NumSectionsSkippedNoRow;
+				continue;
+			}
+			const FProcMeshSection* ProcSection = IslandMesh->GetProcMeshSection(Section);
+			if (!ProcSection)
+			{
+				++NumSectionsSkippedNoProc;
+				continue;
+			}
+			const FVector4 Value = IH_WB_IslandActorPrivate::GetVertexColorValueForRow(
+				*Rows[BiomeSectionRowIndices[Section]], Mode);
+			for (const FProcMeshVertex& V : ProcSection->ProcVertexBuffer)
+			{
+				IH_WB_IslandActorPrivate::AccumulateVertexColorValue(ColorAccum, V.Position, Value);
+			}
+		}
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("VertexColor diag (toggle): %d total sections, %d skipped(noRow), %d skipped(noProc)"),
+			BiomeSectionRowIndices.Num(), NumSectionsSkippedNoRow, NumSectionsSkippedNoProc);
+
+		UMaterialInstanceDynamic* SharedMid = IH_WB_IslandActorPrivate::CreateSharedIslandModeMaterial(this, Mode);
+		// TEMP DIAGNOSTIC (2026-09-20): mirrors ApplyDtBiomeColorBands' own diagnostic - the
+		// generation-time path logged sane values, but this toggle path (ApplyDevColorMode) had no
+		// visibility at all, and PGC specifically showed flat/wrong color after toggling to it.
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("VertexColor diag (toggle): mode=%d, accumMapSize=%d, SharedMid=%s"),
+			static_cast<int32>(Mode), ColorAccum.Num(), SharedMid ? TEXT("valid") : TEXT("NULL"));
+		for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
+		{
+			if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
+			{
+				continue;
+			}
+			const FProcMeshSection* ProcSection = IslandMesh->GetProcMeshSection(Section);
+			if (!ProcSection)
+			{
+				continue;
+			}
+			const int32 NumSectionVerts = ProcSection->ProcVertexBuffer.Num();
+			TArray<FVector> Positions;
+			TArray<FVector> SectionNormals;
+			TArray<FVector2D> SectionUV0;
+			TArray<FProcMeshTangent> SectionTangents;
+			TArray<FColor> NewColors;
+			Positions.Reserve(NumSectionVerts);
+			SectionNormals.Reserve(NumSectionVerts);
+			SectionUV0.Reserve(NumSectionVerts);
+			SectionTangents.Reserve(NumSectionVerts);
+			NewColors.Reserve(NumSectionVerts);
+			for (const FProcMeshVertex& V : ProcSection->ProcVertexBuffer)
+			{
+				Positions.Add(V.Position);
+				SectionNormals.Add(V.Normal);
+				SectionUV0.Add(V.UV0);
+				SectionTangents.Add(V.Tangent);
+				NewColors.Add(IH_WB_IslandActorPrivate::SampleAccumulatedVertexColor(ColorAccum, V.Position));
+			}
+			IslandMesh->UpdateMeshSection(Section, Positions, SectionNormals, SectionUV0, NewColors, SectionTangents);
+			if (SharedMid)
+			{
+				IslandMesh->SetMaterial(Section, SharedMid);
+			}
+
+			if (NewColors.Num() > 0)
+			{
+				int64 SumR = 0, SumG = 0, SumB = 0, SumA = 0;
+				for (const FColor& C : NewColors) { SumR += C.R; SumG += C.G; SumB += C.B; SumA += C.A; }
+				const int32 N = NewColors.Num();
+				UE_LOG(LogIH_WB_Demo004, Log,
+					TEXT("VertexColor diag (toggle): section=%d row=%d verts=%d avg RGBA=(%.1f,%.1f,%.1f,%.1f)"),
+					Section, BiomeSectionRowIndices[Section], N,
+					static_cast<double>(SumR) / N, static_cast<double>(SumG) / N,
+					static_cast<double>(SumB) / N, static_cast<double>(SumA) / N);
+			}
+		}
+	}
+
+	// 2026-09-19: ShelfMesh (the WWF shallow-shelf ring, -25..0m — visible as the tan beachfront
+	// band) is a SEPARATE UProceduralMeshComponent from IslandMesh, built once in
+	// BuildSeaShelfExtentFromShelfSegments with its own fixed "shelf sand" material
+	// (LoadShelfBandMaterial, falling back to a flat cyan MID) — it was never wired into DEV View
+	// mode at all, so BANDS/BIOME/PGC all showed it identically. Scoped to PGC only (not
+	// BANDS/BIOME, which already look correct and aren't part of this ask): swaps it to the same
+	// naturalistic ground material IslandMesh's WWF-tier sections use in PGC, keyed off any WWF row
+	// (all 6 of WWF's slope subdivisions share the same terrainTier/biomeColor, so which one doesn't
+	// matter here) — and restores the original shelf material on any other mode, since leaving the
+	// PGC material assigned after switching away would otherwise stick.
+	if (ShelfMesh && ShelfMesh->GetNumSections() > 0)
+	{
+		if (Mode == IHDevViewRuntime::EIHDevColorMode::PGC)
+		{
+			const FIHASLSlopeBiomeRow* WwfRow = nullptr;
+			for (const FIHASLSlopeBiomeRow* Row : Rows)
+			{
+				if (Row && Row->terrainTier == TEXT("WWF"))
+				{
+					WwfRow = Row;
+					break;
+				}
+			}
+			if (WwfRow)
+			{
+				if (UMaterialInstanceDynamic* ShelfMid =
+					IH_WB_IslandActorPrivate::CreateIslandBiomeMaterial(this, *WwfRow, Mode))
+				{
+					ShelfMesh->SetMaterial(0, ShelfMid);
+				}
+			}
+		}
+		else if (UMaterialInterface* OriginalShelfMat = IH_WB_IslandActorPrivate::LoadShelfBandMaterial())
+		{
+			ShelfMesh->SetMaterial(0, OriginalShelfMat);
+		}
+		else if (UMaterialInstanceDynamic* CyanMid = IH_WB_IslandActorPrivate::MakeOpaqueShelfCyanMID(this))
+		{
+			ShelfMesh->SetMaterial(0, CyanMid);
+		}
+	}
+
+	ApplyPGCScatterVisibility(Mode == IHDevViewRuntime::EIHDevColorMode::PGC);
+}
+
+namespace IH_WB_IslandActorPrivate
+{
+	// Only triangles whose footprint can reach within this radius of the camera are ever
+	// populated with real instances. 2026-09-19: raised from 60m after PIE testing showed real
+	// instances were being placed (log-confirmed, up to ~1,700/refresh) but frequently read as "no
+	// grass visible" in screenshots anyway - this project's primary camera is an elevated fly-cam
+	// (IH_Cube2FlyPlayerController), typically framing a shot from tens of meters back/up rather
+	// than true first-person ground level, so 60m often didn't reach the terrain actually filling
+	// the frame. 200m better matches how UE's own PCG runtime-generation grids size their
+	// generation radius (typically hundreds of meters, not arm's-reach) for the same reason: it's
+	// sized to camera view distance, not literal foot-proximity.
+	static constexpr float PGCStreamRadiusCm = 20000.f; // 200 m
+	// How often (game-thread, no rendering work) to re-check camera position and refresh the
+	// active set - same "cheap periodic timer, not per-Tick" pattern as
+	// AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating.
+	static constexpr float PGCProximityRefreshIntervalSec = 0.5f;
+	// Only actually refresh once the camera has moved this far since the last refresh - avoids
+	// re-scanning PGCEligibleTris (tens to low hundreds of thousands of entries) every 0.5s while
+	// the camera is sitting still.
+	static constexpr float PGCRefreshMoveThresholdCm = 1000.f; // 10 m
+	// 2026-09-19, tightened: the original version only suspended rebuilds above a "deliberate
+	// zoom/relocate" speed (30 m/s) and otherwise refreshed on every 0.5s tick the camera drifted
+	// >10m — which still meant a full clear+rescatter during ordinary continuous exploring/panning
+	// (real gameplay movement is constant, per explicit user direction), not just fast zooms.
+	// Replaced with a genuine settle gate: the camera must be under this (much lower, ~walking-pace)
+	// speed continuously for PGCSettleDurationSec before ANY refresh is allowed at all — "redraw
+	// only when the viewport is steady," not merely "not currently sprinting." Constant camera
+	// motion during play now costs nothing (RefreshPGCGroundcoverProximity returns immediately,
+	// same near-zero game-thread check either way); groundcover pops in once the player/camera
+	// actually stops or holds a fixed target, exactly like the streaming pattern this project's own
+	// PCG-style proximity design was already modeled on.
+	static constexpr float PGCSettleSpeedCmPerSec = 150.f; // 1.5 m/s
+	static constexpr float PGCSettleDurationSec = 0.75f;
+	// 2026-09-20: how long the camera must stay stationary OR the window stay unfocused before the
+	// 0.5s proximity-refresh timer itself is torn down (not merely skipped) — see
+	// AIH_WB_IslandActor::SuspendPGCProximityTimer's own comment.
+	static constexpr float PGCIdleSuspendThresholdSec = 2.f;
+	// Cadence of the minimal watchdog that replaces the real timer while suspended — just enough to
+	// notice camera movement or regained focus, with none of the eligibility/HISM work.
+	static constexpr float PGCIdleWatchdogIntervalSec = 1.f;
+	// Instances per square meter within the active (near-camera) radius. Unlike the retired whole-
+	// island density, this only ever has to cover a few thousand m² at a time, so it can be tuned
+	// for how it actually looks up close rather than diluted across the whole island.
+	static constexpr float PGCGroundcoverCloseDensityPerSqM = 0.15f;
+	// Safety net only - a single refresh populating this many instances would mean the stream
+	// radius is misconfigured relative to this island's terrain resolution, not normal operation.
+	static constexpr int32 PGCGroundcoverMaxInstancesPerRefresh = 80000;
+}
+
+void AIH_WB_IslandActor::ApplyPGCScatterVisibility(const bool bVisible)
+{
+	if (bVisible)
+	{
+		if (!bPGCEligibilityCacheBuilt)
+		{
+			BuildPGCEligibilityCache();
+			bPGCEligibilityCacheBuilt = true;
+		}
+		// Force the next refresh to actually populate, even if the camera hasn't moved since the
+		// last time PGC was toggled off (e.g. quickly flicking BANDS -> PGC -> BANDS -> PGC).
+		LastPGCRefreshLocalPos = FVector(TNumericLimits<float>::Max());
+		// Reset too, so the very first tick after (re)activation doesn't compute a bogus huge
+		// "speed" from this stale sentinel and wrongly suspend the first real refresh.
+		LastPGCTickLocalPos = FVector(TNumericLimits<float>::Max());
+		PGCTimeIdleForSuspendSec = 0.f;
+		bPGCProximityTimerSuspended = false;
+		RefreshPGCGroundcoverProximity();
+		GetWorldTimerManager().SetTimer(PGCProximityRefreshTimerHandle, this,
+			&AIH_WB_IslandActor::RefreshPGCGroundcoverProximity,
+			IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec, true);
+	}
+	else
+	{
+		GetWorldTimerManager().ClearTimer(PGCProximityRefreshTimerHandle);
+		GetWorldTimerManager().ClearTimer(PGCIdleWatchdogTimerHandle);
+		bPGCProximityTimerSuspended = false;
+	}
+	for (const TPair<FName, TObjectPtr<UHierarchicalInstancedStaticMeshComponent>>& Pair : PGCGroundcoverHISMs)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->SetVisibility(bVisible, true);
+			Pair.Value->SetHiddenInGame(!bVisible, true);
+		}
+	}
+}
+
+UHierarchicalInstancedStaticMeshComponent* AIH_WB_IslandActor::GetOrCreatePGCGroundcoverHISM(UStaticMesh* Mesh)
+{
+	if (!Mesh)
+	{
+		return nullptr;
+	}
+	const FName Key(*Mesh->GetPathName());
+	if (const TObjectPtr<UHierarchicalInstancedStaticMeshComponent>* Found = PGCGroundcoverHISMs.Find(Key))
+	{
+		return *Found;
+	}
+	UHierarchicalInstancedStaticMeshComponent* HISM =
+		NewObject<UHierarchicalInstancedStaticMeshComponent>(this, NAME_None, RF_Transient);
+	HISM->SetStaticMesh(Mesh);
+	HISM->SetupAttachment(SceneRoot);
+	HISM->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	HISM->SetCastShadow(true);
+	HISM->RegisterComponent();
+	PGCGroundcoverHISMs.Add(Key, HISM);
+	return HISM;
+}
+
+// 2026-09-18: PGC round 1 - groundcover-only scatter. Only ~40% of DT_BiomeRecommendations' 62
+// distinct tags have a real mesh in Content today (confirmed via a full Content search; Trees and
+// most Props tags are empty on purpose, pending an asset pack) - DT_PGCMeshCatalog rows with an
+// empty `meshes` array are silently skipped here, never an error.
+//
+// 2026-09-19: gathers eligible triangles into a flat cache (see FIHPGCEligibleTri's own comment for
+// why this is NOT bucketed into a fixed grid) but creates NO instances - that's
+// RefreshPGCGroundcoverProximity's job, only for whichever triangles are actually near the camera.
+void AIH_WB_IslandActor::BuildPGCEligibilityCache()
+{
+	PGCEligibleTris.Reset();
+
+	if (!IslandMesh || BiomeSectionRowIndices.Num() == 0)
+	{
+		return;
+	}
+	const UGameInstance* GI = GetGameInstance();
+	const UIH_WorldBuilderDataSubsystem* Subsystem =
+		GI ? GI->GetSubsystem<UIH_WorldBuilderDataSubsystem>() : nullptr;
+	UDataTable* RecTable = Subsystem ? Subsystem->GetBiomeRecommendationsTable() : nullptr;
+	if (!RecTable)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("PGC groundcover: DT_BiomeRecommendations unavailable — skipping eligibility cache."));
+		return;
+	}
+
+	const TArray<const FIHASLSlopeBiomeRow*> Rows =
+		IH_WB_IslandActorPrivate::GetBiomeRowsSortedForClassification(this);
+	if (Rows.Num() == 0)
+	{
+		return;
+	}
+
 	for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
 	{
-		if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
+		const int32 RowIndex = BiomeSectionRowIndices[Section];
+		if (!Rows.IsValidIndex(RowIndex))
 		{
 			continue;
 		}
-		if (UMaterialInstanceDynamic* Mid = IH_WB_IslandActorPrivate::CreateIslandBiomeMaterial(
-			this, *Rows[BiomeSectionRowIndices[Section]], Mode))
+		const FIHASLSlopeBiomeRow* Row = Rows[RowIndex];
+		const FIHBiomeRecommendationsRow* Rec =
+			RecTable->FindRow<FIHBiomeRecommendationsRow>(Row->biomeID, TEXT("PGCGroundcoverCache"));
+		if (!Rec || Rec->groundcover.Num() == 0)
 		{
-			IslandMesh->SetMaterial(Section, Mid);
+			continue;
 		}
+		const FProcMeshSection* ProcSection = IslandMesh->GetProcMeshSection(Section);
+		if (!ProcSection)
+		{
+			continue;
+		}
+		const TArray<uint32>& Idx = ProcSection->ProcIndexBuffer;
+		const TArray<FProcMeshVertex>& Verts = ProcSection->ProcVertexBuffer;
+
+		for (int32 TriBase = 0; TriBase + 2 < Idx.Num(); TriBase += 3)
+		{
+			if (!Verts.IsValidIndex(Idx[TriBase]) || !Verts.IsValidIndex(Idx[TriBase + 1])
+				|| !Verts.IsValidIndex(Idx[TriBase + 2]))
+			{
+				continue;
+			}
+			const FVector& P0 = Verts[Idx[TriBase]].Position;
+			const FVector& P1 = Verts[Idx[TriBase + 1]].Position;
+			const FVector& P2 = Verts[Idx[TriBase + 2]].Position;
+			const float AreaSqM =
+				FVector::CrossProduct(P1 - P0, P2 - P0).Size() * 0.5f / (100.f * 100.f);
+			if (AreaSqM <= 0.f)
+			{
+				continue;
+			}
+
+			FIHPGCEligibleTri Tri;
+			Tri.P0 = P0;
+			Tri.P1 = P1;
+			Tri.P2 = P2;
+			Tri.Centroid = (P0 + P1 + P2) / 3.f;
+			Tri.AreaSqM = AreaSqM;
+			Tri.BoundingRadiusCm = FMath::Max3(
+				FVector::Dist(Tri.Centroid, P0), FVector::Dist(Tri.Centroid, P1), FVector::Dist(Tri.Centroid, P2));
+			Tri.BiomeRowIndex = RowIndex;
+			PGCEligibleTris.Add(MoveTemp(Tri));
+		}
+	}
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("PGC groundcover: island %d eligibility cache built - %d triangles."),
+		TankIslandIndex, PGCEligibleTris.Num());
+}
+
+// 2026-09-19: linear scan over PGCEligibleTris rather than a pre-bucketed grid - see
+// FIHPGCEligibleTri's comment for why bucketing was actively wrong at this terrain's triangle
+// scale (~1,600 sq m average). A few hundred thousand plain FVector::Dist calls on a 0.5s timer,
+// gated further by PGCRefreshMoveThresholdCm, is trivial game-thread cost with no rendering
+// involved - the same cost profile as AIH_WaterlineOceanAdapter's existing per-island distance
+// check, just against more candidates.
+void AIH_WB_IslandActor::RefreshPGCGroundcoverProximity()
+{
+	if (PGCEligibleTris.Num() == 0)
+	{
+		return;
+	}
+	const APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0);
+	if (!CameraManager)
+	{
+		return;
+	}
+	const FVector LocalCamPos = GetActorTransform().InverseTransformPosition(CameraManager->GetCameraLocation());
+
+	// Settle gate: only refresh once the camera has held a near-stationary speed continuously for
+	// PGCSettleDurationSec — "redraw only when the viewport is steady," not just "not currently
+	// sprinting." Measured against the PREVIOUS tick (not the previous actual rebuild), so this is
+	// a true instantaneous-speed check; any tick above the settle threshold resets the accumulator,
+	// so continuous ordinary camera movement during play never accumulates enough settled time to
+	// trigger a rebuild at all (near-zero cost - this whole function returns after one Dist call).
+	const bool bHasPriorTick = LastPGCTickLocalPos.X != TNumericLimits<float>::Max();
+	const float SpeedCmPerSec = bHasPriorTick
+		? FVector::Dist(LocalCamPos, LastPGCTickLocalPos) / IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec
+		: 0.f;
+	LastPGCTickLocalPos = LocalCamPos;
+
+	// 2026-09-20: full-suspend check — independent of (and checked before) the settle gate below,
+	// since it cares about "stationary OR unfocused" while the settle gate only cares about speed.
+	// Stopping here (rather than letting the settle-gate return below also serve this purpose)
+	// means an unfocused-but-moving camera (e.g. alt-tabbed away with a script wiggling the view)
+	// still correctly suspends.
+	const bool bCameraStationary = SpeedCmPerSec <= IH_WB_IslandActorPrivate::PGCSettleSpeedCmPerSec;
+	if (bCameraStationary || !FApp::HasFocus())
+	{
+		PGCTimeIdleForSuspendSec += IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec;
+	}
+	else
+	{
+		PGCTimeIdleForSuspendSec = 0.f;
+	}
+	if (PGCTimeIdleForSuspendSec >= IH_WB_IslandActorPrivate::PGCIdleSuspendThresholdSec)
+	{
+		SuspendPGCProximityTimer();
+		return;
+	}
+
+	if (SpeedCmPerSec > IH_WB_IslandActorPrivate::PGCSettleSpeedCmPerSec)
+	{
+		PGCTimeBelowSettleSpeedSec = 0.f;
+		return;
+	}
+	PGCTimeBelowSettleSpeedSec += IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec;
+	if (PGCTimeBelowSettleSpeedSec < IH_WB_IslandActorPrivate::PGCSettleDurationSec)
+	{
+		return;
+	}
+
+	if (FVector::DistSquared(LocalCamPos, LastPGCRefreshLocalPos)
+		< FMath::Square(IH_WB_IslandActorPrivate::PGCRefreshMoveThresholdCm))
+	{
+		return;
+	}
+	LastPGCRefreshLocalPos = LocalCamPos;
+
+	const UGameInstance* GI = GetGameInstance();
+	const UIH_WorldBuilderDataSubsystem* Subsystem =
+		GI ? GI->GetSubsystem<UIH_WorldBuilderDataSubsystem>() : nullptr;
+	UDataTable* RecTable = Subsystem ? Subsystem->GetBiomeRecommendationsTable() : nullptr;
+	UDataTable* CatalogTable = Subsystem ? Subsystem->GetPGCMeshCatalogTable() : nullptr;
+	if (!RecTable || !CatalogTable)
+	{
+		return;
+	}
+	const TArray<const FIHASLSlopeBiomeRow*> Rows =
+		IH_WB_IslandActorPrivate::GetBiomeRowsSortedForClassification(this);
+
+	for (const TPair<FName, TObjectPtr<UHierarchicalInstancedStaticMeshComponent>>& Pair : PGCGroundcoverHISMs)
+	{
+		if (Pair.Value)
+		{
+			Pair.Value->ClearInstances();
+		}
+	}
+
+	// Deterministic per-refresh-position seed (rounded to the move threshold) so revisiting
+	// roughly the same spot shows roughly the same scatter, rather than reshuffling every refresh.
+	const FIntPoint SeedCell(
+		FMath::FloorToInt(LocalCamPos.X / IH_WB_IslandActorPrivate::PGCRefreshMoveThresholdCm),
+		FMath::FloorToInt(LocalCamPos.Y / IH_WB_IslandActorPrivate::PGCRefreshMoveThresholdCm));
+	FRandomStream Rng(static_cast<int32>(HashCombine(GetUniqueID(), GetTypeHash(SeedCell))));
+
+	int32 TotalInstances = 0;
+	for (const FIHPGCEligibleTri& Tri : PGCEligibleTris)
+	{
+		if (FVector::Dist(LocalCamPos, Tri.Centroid)
+			> IH_WB_IslandActorPrivate::PGCStreamRadiusCm + Tri.BoundingRadiusCm)
+		{
+			continue;
+		}
+		if (!Rows.IsValidIndex(Tri.BiomeRowIndex))
+		{
+			continue;
+		}
+		const FIHBiomeRecommendationsRow* Rec = RecTable->FindRow<FIHBiomeRecommendationsRow>(
+			Rows[Tri.BiomeRowIndex]->biomeID, TEXT("PGCGroundcoverScatter"));
+		if (!Rec || Rec->groundcover.Num() == 0)
+		{
+			continue;
+		}
+
+		const float ExpectedCount = Tri.AreaSqM * IH_WB_IslandActorPrivate::PGCGroundcoverCloseDensityPerSqM;
+		const int32 InstanceCount =
+			FMath::FloorToInt(ExpectedCount) + (Rng.FRand() < FMath::Frac(ExpectedCount) ? 1 : 0);
+
+		for (int32 k = 0; k < InstanceCount; ++k)
+		{
+			if (TotalInstances >= IH_WB_IslandActorPrivate::PGCGroundcoverMaxInstancesPerRefresh)
+			{
+				UE_LOG(LogIH_WB_Demo004, Warning,
+					TEXT("PGC groundcover: hit %d-instance safety cap on island %d's proximity refresh."),
+					IH_WB_IslandActorPrivate::PGCGroundcoverMaxInstancesPerRefresh, TankIslandIndex);
+				return;
+			}
+
+			// Uniform random point in the triangle via sqrt-barycentric sampling.
+			const float R1 = FMath::Sqrt(Rng.FRand());
+			const float R2 = Rng.FRand();
+			const FVector LocalPos =
+				Tri.P0 * (1.f - R1) + Tri.P1 * (R1 * (1.f - R2)) + Tri.P2 * (R1 * R2);
+
+			const FName Tag = Rec->groundcover[Rng.RandRange(0, Rec->groundcover.Num() - 1)];
+			const FIHPGCMeshCatalogRow* CatalogRow =
+				CatalogTable->FindRow<FIHPGCMeshCatalogRow>(Tag, TEXT("PGCGroundcoverScatter"));
+			if (!CatalogRow || CatalogRow->meshes.Num() == 0)
+			{
+				continue;
+			}
+			UStaticMesh* Mesh =
+				CatalogRow->meshes[Rng.RandRange(0, CatalogRow->meshes.Num() - 1)].LoadSynchronous();
+			if (!Mesh)
+			{
+				continue;
+			}
+			UHierarchicalInstancedStaticMeshComponent* HISM = GetOrCreatePGCGroundcoverHISM(Mesh);
+			if (!HISM)
+			{
+				continue;
+			}
+			const float Scale = Rng.FRandRange(CatalogRow->uniformScaleMin, CatalogRow->uniformScaleMax);
+			const float Yaw = CatalogRow->bRandomizeYaw ? Rng.FRandRange(0.f, 360.f) : 0.f;
+			const FTransform InstanceXform(FRotator(0.f, Yaw, 0.f), LocalPos, FVector(Scale));
+			HISM->AddInstance(InstanceXform);
+			++TotalInstances;
+		}
+	}
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("PGC groundcover: island %d proximity refresh - %d instances across %d mesh type(s)."),
+		TankIslandIndex, TotalInstances, PGCGroundcoverHISMs.Num());
+}
+
+// 2026-09-20: see PGCTimeIdleForSuspendSec's own header comment - this is what actually stops the
+// churn/memory-pressure complaint rather than just gating the expensive branch (which the settle
+// gate above already did). Swaps the real 0.5s timer for a near-free 1Hz watchdog whose only job is
+// noticing when to come back.
+void AIH_WB_IslandActor::SuspendPGCProximityTimer()
+{
+	if (bPGCProximityTimerSuspended)
+	{
+		return;
+	}
+	bPGCProximityTimerSuspended = true;
+	bPGCWasFocusedAtSuspend = FApp::HasFocus();
+	GetWorldTimerManager().ClearTimer(PGCProximityRefreshTimerHandle);
+	GetWorldTimerManager().SetTimer(PGCIdleWatchdogTimerHandle, this,
+		&AIH_WB_IslandActor::CheckPGCIdleWatchdog,
+		IH_WB_IslandActorPrivate::PGCIdleWatchdogIntervalSec, true);
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("PGC groundcover: island %d proximity refresh SUSPENDED (idle/unfocused >= %.1fs)."),
+		TankIslandIndex, IH_WB_IslandActorPrivate::PGCIdleSuspendThresholdSec);
+}
+
+void AIH_WB_IslandActor::ResumePGCProximityTimer()
+{
+	if (!bPGCProximityTimerSuspended)
+	{
+		return;
+	}
+	bPGCProximityTimerSuspended = false;
+	PGCTimeIdleForSuspendSec = 0.f;
+	GetWorldTimerManager().ClearTimer(PGCIdleWatchdogTimerHandle);
+	GetWorldTimerManager().SetTimer(PGCProximityRefreshTimerHandle, this,
+		&AIH_WB_IslandActor::RefreshPGCGroundcoverProximity,
+		IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec, true);
+	UE_LOG(LogIH_WB_Demo004, Log, TEXT("PGC groundcover: island %d proximity refresh RESUMED."), TankIslandIndex);
+}
+
+// Runs only while suspended, at a much lower cadence than the real refresh, doing none of the
+// eligibility/HISM work - just enough to detect "camera moved" or "focus regained" (a plain
+// FApp::HasFocus() true here that was ALSO true when we suspended is not a resume trigger - that's
+// the idle-while-still-focused case, and re-triggering on it every tick would just thrash suspend/
+// resume forever).
+void AIH_WB_IslandActor::CheckPGCIdleWatchdog()
+{
+	const APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0);
+	if (!CameraManager)
+	{
+		return;
+	}
+	const FVector LocalCamPos = GetActorTransform().InverseTransformPosition(CameraManager->GetCameraLocation());
+	const float SpeedCmPerSec =
+		FVector::Dist(LocalCamPos, LastPGCTickLocalPos) / IH_WB_IslandActorPrivate::PGCIdleWatchdogIntervalSec;
+	LastPGCTickLocalPos = LocalCamPos;
+
+	const bool bMoved = SpeedCmPerSec > IH_WB_IslandActorPrivate::PGCSettleSpeedCmPerSec;
+	const bool bFocusRegained = FApp::HasFocus() && !bPGCWasFocusedAtSuspend;
+	if (bMoved || bFocusRegained)
+	{
+		ResumePGCProximityTimer();
 	}
 }
 
@@ -5331,6 +6325,167 @@ void AIH_WB_IslandActor::BuildSeaShelfExtentFromShelfSegments()
 	bHasSeaRootsExtent = HasValidSeaRootsExtentForPresentation(SeaRootsExtent);
 }
 
+void AIH_WB_IslandActor::RunFirstBake()
+{
+	using namespace UE::Geometry;
+
+	if (!IslandMesh || IslandMesh->GetNumSections() == 0)
+	{
+		return;
+	}
+
+	FDynamicMesh3 CombinedMesh;
+	CombinedMesh.EnableAttributes();
+	CombinedMesh.Attributes()->EnableMaterialID();
+	FDynamicMeshMaterialAttribute* MaterialIDs = CombinedMesh.Attributes()->GetMaterialID();
+
+	TArray<UMaterialInterface*> MaterialSet;
+	int32 TrianglesAppended = 0;
+
+	const int32 NumSections = IslandMesh->GetNumSections();
+	for (int32 Section = 0; Section < NumSections; ++Section)
+	{
+		MaterialSet.Add(IslandMesh->GetMaterial(Section));
+
+		const FProcMeshSection* ProcSection = IslandMesh->GetProcMeshSection(Section);
+		if (!ProcSection || ProcSection->ProcVertexBuffer.Num() == 0)
+		{
+			continue;
+		}
+		const TArray<FProcMeshVertex>& Verts = ProcSection->ProcVertexBuffer;
+		const TArray<uint32>& Idx = ProcSection->ProcIndexBuffer;
+
+		// BuildMeshesFromCellGraph gives every section the SAME full whole-island vertex buffer
+		// and varies only each section's own triangle index list ("Shared vert buffers;
+		// per-matched-row index lists" - ApplyDtBiomeColorBands). Appending Verts wholesale here
+		// would copy that entire whole-island buffer once per section (~35-40x over-count observed
+		// in PIE: 5.3M appended vertices for 132K triangles). Only append a vertex the first time
+		// one of THIS section's own triangles actually references it.
+		TArray<int32> VertexIdMap;
+		VertexIdMap.Init(INDEX_NONE, Verts.Num());
+		const auto EnsureVertex = [&CombinedMesh, &VertexIdMap, &Verts](uint32 OldIdx) -> int32
+		{
+			int32& MappedId = VertexIdMap[OldIdx];
+			if (MappedId == INDEX_NONE)
+			{
+				MappedId = CombinedMesh.AppendVertex(Verts[OldIdx].Position);
+			}
+			return MappedId;
+		};
+
+		for (int32 TriBase = 0; TriBase + 2 < Idx.Num(); TriBase += 3)
+		{
+			const uint32 I0 = Idx[TriBase];
+			const uint32 I1 = Idx[TriBase + 1];
+			const uint32 I2 = Idx[TriBase + 2];
+			if (!Verts.IsValidIndex(I0) || !Verts.IsValidIndex(I1) || !Verts.IsValidIndex(I2))
+			{
+				continue;
+			}
+			const int32 NewTriId = CombinedMesh.AppendTriangle(EnsureVertex(I0), EnsureVertex(I1), EnsureVertex(I2));
+			if (NewTriId >= 0)
+			{
+				MaterialIDs->SetValue(NewTriId, Section);
+				++TrianglesAppended;
+			}
+		}
+	}
+
+	if (TrianglesAppended == 0)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("First Bake: island %d — no triangles to bake, skipped."), TankIslandIndex);
+		return;
+	}
+
+	if (!BakedIslandMesh)
+	{
+		BakedIslandMesh = NewObject<UDynamicMeshComponent>(this, TEXT("BakedIslandMesh"), RF_Transient);
+		BakedIslandMesh->SetupAttachment(SceneRoot);
+		BakedIslandMesh->SetCollisionObjectType(ECC_WorldStatic);
+		BakedIslandMesh->SetCollisionResponseToAllChannels(ECR_Block);
+		BakedIslandMesh->ComponentTags.Add(FName(TEXT("IH_Island")));
+		BakedIslandMesh->RegisterComponent();
+	}
+
+	// Batch every edit (weld, smooth, normals) into ONE aggregate collision cook instead of one
+	// per Geometry Script call — UDynamicMeshComponent was purpose-built for this (see this
+	// function's header comment / IH_WB_Phase_Order_Canon.md), avoiding the exact per-call-recook
+	// trap already found and fixed in UProceduralMeshComponent::CreateMeshSection this session.
+	BakedIslandMesh->SetDeferredCollisionUpdatesEnabled(true, false);
+	BakedIslandMesh->SetMesh(MoveTemp(CombinedMesh));
+
+	UDynamicMesh* DynMesh = BakedIslandMesh->GetDynamicMesh();
+
+	// Weld the open seams left at every former PMC-section boundary (sections had disjoint vertex
+	// buffers) into one continuous manifold surface. Tolerance is generous (5mm) vs. bit-exact —
+	// each section computed its own copy of shared boundary vertices independently, so float
+	// rounding could leave them a hair apart even though they describe the same seam.
+	FGeometryScriptWeldEdgesOptions WeldOptions;
+	WeldOptions.Tolerance = 0.5f;
+	UGeometryScriptLibrary_MeshRepairFunctions::WeldMeshEdges(DynMesh, WeldOptions);
+
+	// Whole-mesh smoothing (empty selection -> FullMeshSelection). 2026-09-19: PIE-confirmed at
+	// both NumIterations=4/Alpha=0.2 AND a much heavier NumIterations=30/Alpha=0.25 that the
+	// visible triangular faceting on this terrain (~1,600 sq m/tri) does NOT go away either way —
+	// this is a triangle-DENSITY ceiling (Laplacian position-averaging can't erase a facet that's
+	// just a big flat triangle), not something smoothing-parameter strength can fix. Real
+	// de-faceting needs a subdivision pass, scoped as its own future round given the collision/
+	// render cost of subdividing every island's already-large triangle counts. Dialed back to a
+	// light pass here — no reason to pay for 30 iterations on every commit when it bought zero
+	// visible improvement; this still gently softens minor per-vertex noise for free.
+	FGeometryScriptIterativeMeshSmoothingOptions SmoothOptions;
+	SmoothOptions.NumIterations = 5;
+	SmoothOptions.Alpha = 0.2f;
+	UGeometryScriptLibrary_MeshDeformFunctions::ApplyIterativeSmoothingToMesh(
+		DynMesh, FGeometryScriptMeshSelection(), SmoothOptions);
+
+	// One averaged normal per vertex, no hard edges — matches IslandMesh's own deliberately
+	// smoothed-for-lighting normals (see BuildMeshesFromCellGraph), now recomputed from the
+	// welded+smoothed geometry rather than carried over stale from the pre-bake mesh.
+	UGeometryScriptLibrary_MeshNormalsFunctions::SetPerVertexNormals(DynMesh);
+
+	BakedIslandMesh->NotifyMeshUpdated();
+	BakedIslandMesh->ConfigureMaterialSet(MaterialSet);
+	BakedIslandMesh->EnableComplexAsSimpleCollision();
+	BakedIslandMesh->SetDeferredCollisionUpdatesEnabled(false, true);
+	BakedIslandMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	BakedIslandMesh->SetVisibility(true);
+	BakedIslandMesh->SetHiddenInGame(false);
+
+	// IslandMesh is hidden, not destroyed — BuildPGCEligibilityCache and other code still reading
+	// its ProcMeshSections keeps working unchanged.
+	IslandMesh->SetVisibility(false);
+	IslandMesh->SetHiddenInGame(true);
+	IslandMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+
+	bFirstBaked = true;
+	RegisterCollision();
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("First Bake: island %d — %d verts / %d tris after weld+smooth."),
+		TankIslandIndex, DynMesh->GetMeshRef().VertexCount(), DynMesh->GetMeshRef().TriangleCount());
+}
+
+void AIH_WB_IslandActor::ResetFirstBake()
+{
+	if (!bFirstBaked)
+	{
+		return;
+	}
+	bFirstBaked = false;
+	if (BakedIslandMesh)
+	{
+		BakedIslandMesh->SetVisibility(false);
+		BakedIslandMesh->SetHiddenInGame(true);
+		BakedIslandMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	}
+	IslandMesh->SetVisibility(true);
+	IslandMesh->SetHiddenInGame(false);
+	IslandMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
+	RegisterCollision();
+}
+
 void AIH_WB_IslandActor::RegisterCollision()
 {
 	if (UGameInstance* GI = GetGameInstance())
@@ -5338,7 +6493,14 @@ void AIH_WB_IslandActor::RegisterCollision()
 		if (UIH_P1C07_IslandCollisionSubsystem* Collision = GI->GetSubsystem<UIH_P1C07_IslandCollisionSubsystem>())
 		{
 			Collision->UnregisterIslandCollision(this);
-			Collision->RegisterIslandCollision(this, IslandMesh);
+			if (bFirstBaked && BakedIslandMesh)
+			{
+				Collision->RegisterIslandCollision(this, BakedIslandMesh);
+			}
+			else
+			{
+				Collision->RegisterIslandCollision(this, IslandMesh);
+			}
 			if (IHInvisibleHandSpec::IsWwfShelfCollisionEnabled() && ShelfMesh)
 			{
 				Collision->RegisterIslandCollision(this, ShelfMesh);

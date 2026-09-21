@@ -57,6 +57,8 @@ public:
 
 	void RefreshGridTemplateList();
 	void RefreshBuildTemplateList();
+	/** 2026-09-13: dev-only Convey (C) Merchantman drag tile - one hardcoded row, no DataTable. */
+	void RefreshConveyTemplateList();
 	void RefreshWorldStampPalette();
 
 	void SetTabStripVisible(bool bVisible);
@@ -89,6 +91,7 @@ public:
 
 	int32 HitTestGridTemplateTile(const FVector2D& ScreenAbsolute) const;
 	int32 HitTestBuildTemplateTile(const FVector2D& ScreenAbsolute) const;
+	int32 HitTestConveyTemplateTile(const FVector2D& ScreenAbsolute) const;
 	int32 HitTestWorldStampTile(const FVector2D& ScreenAbsolute) const;
 
 protected:
@@ -190,6 +193,7 @@ private:
 
 	bool TryGetGridTemplateRowLocalRect(int32 RowIndex, FSlateRect& OutLocalRect) const;
 	bool TryGetBuildTemplateRowLocalRect(int32 RowIndex, FSlateRect& OutLocalRect) const;
+	bool TryGetConveyTemplateRowLocalRect(int32 RowIndex, FSlateRect& OutLocalRect) const;
 	bool TryGetWorldStampSlotLocalRect(int32 SlotIndex, FSlateRect& OutLocalRect) const;
 
 	int32 PaintGridFlyOutContent(
@@ -198,6 +202,12 @@ private:
 		int32 LayerId) const;
 
 	int32 PaintBuildFlyOutContent(
+		const FGeometry& FlyOutGeometry,
+		FSlateWindowElementList& OutDrawElements,
+		int32 LayerId) const;
+
+	/** 2026-09-13: dev-only Convey (C) Merchantman drag tile paint - mirrors PaintBuildFlyOutContent. */
+	int32 PaintConveyFlyOutContent(
 		const FGeometry& FlyOutGeometry,
 		FSlateWindowElementList& OutDrawElements,
 		int32 LayerId) const;
@@ -329,6 +339,7 @@ private:
 
 	TArray<FIHBuildPaletteItemRow> CachedGridRows;
 	TArray<FIHBuildPaletteItemRow> CachedBuildRows;
+	TArray<FIHBuildPaletteItemRow> CachedConveyRows;
 	TArray<FWorldStampPaletteSlot> CachedWorldStampSlots;
 
 	int32 HoveredTemplateIndex = INDEX_NONE;
