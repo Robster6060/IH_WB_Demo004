@@ -367,6 +367,10 @@ protected:
 	 * BakedIslandMesh before any real graph is built on top of that assumption. */
 	UPROPERTY(VisibleAnywhere, Category = "IH|Island")
 	TObjectPtr<UPCGComponent> PCGValidationComponent;
+	/** One-shot guard so CheckTerrainDetailAutoTrigger's auto-trigger only calls Generate() once per
+	 * island (this is a data-flow validation check, not real recurring generation - Phase 2 will
+	 * replace this whole mechanism with PCG's own native runtime-generation trigger). */
+	bool bPCGValidationTriggered = false;
 	/** 2026-09-21: BakedIslandMesh vertex ID -> its ORIGINAL (pre-smoothing) classification position,
 	 * captured once in RunFirstBake right after weld. ApplyDevColorMode's baked-mode-toggle branch
 	 * uses this to re-associate each (now-smoothed, drifted) vertex with the correct classified row

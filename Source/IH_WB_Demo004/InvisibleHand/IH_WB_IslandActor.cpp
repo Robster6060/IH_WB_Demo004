@@ -3399,6 +3399,21 @@ void AIH_WB_IslandActor::CheckTerrainDetailAutoTrigger()
 		return;
 	}
 
+	// 2026-09-22 (IH_WB_PCG_Architecture_Canon.md, Phase 0): auto-trigger the PCG validation
+	// component from this SAME proven settle-gate, instead of requiring the manual
+	// TestPCGGroundcoverValidation console command for every test - "game-initiated, not console,"
+	// per user request. Once only per island (bPCGValidationTriggered) since this is purely a one-
+	// time data-flow check, not real recurring groundcover generation yet (that's Phase 2, which
+	// will properly use PCG's own native GenerateAtRuntime trigger instead of this settle-gate -
+	// see the canon doc for why that needs a project-owned persistent map first).
+	if (PCGValidationComponent && PCGValidationComponent->GetGraph() && !bPCGValidationTriggered)
+	{
+		bPCGValidationTriggered = true;
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("PCG validation: auto-triggered by camera settle — island %d."), TankIslandIndex);
+		PCGValidationComponent->Generate(/*bForce=*/true);
+	}
+
 	// Already baked: re-tessellate the local patch around the settled camera, but only once it has
 	// moved meaningfully since the LAST tessellation pass (same PGCRefreshMoveThresholdCm-style guard
 	// PGC groundcover uses) — avoids redoing identical work every 0.25s tick while genuinely
