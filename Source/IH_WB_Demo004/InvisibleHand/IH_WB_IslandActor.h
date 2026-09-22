@@ -18,6 +18,7 @@ class AIH_TerrainStampActor;
 class UHierarchicalInstancedStaticMeshComponent;
 class UStaticMesh;
 class UDynamicMeshComponent;
+class UPCGComponent;
 namespace UE::Geometry { class FDynamicMesh3; }
 
 /** One groundcover-eligible triangle, cached once per island so PGC proximity refreshes never have
@@ -126,6 +127,7 @@ public:
 	 * Game Map forward-compatibility, per canon doc). */
 	void RunFirstBake();
 	bool IsFirstBaked() const { return bFirstBaked; }
+	UPCGComponent* GetPCGValidationComponent() const { return PCGValidationComponent; }
 	/** 2026-09-21 (camera-settle proximity tessellation): densifies+smooths a local patch of the
 	 * ALREADY-BAKED mesh around WorldCenter, replacing whatever's currently displayed with a FRESH
 	 * copy re-derived from FirstBakeSourceMesh every call (never edits the live mesh in place - see
@@ -358,6 +360,13 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UDynamicMeshComponent> BakedIslandMesh;
 	bool bFirstBaked = false;
+	/** 2026-09-22 (IH_WB_PCG_Architecture_Canon.md, Phase 0): validation-only PCG component, not yet
+	 * used for real groundcover. GenerationTrigger left at GenerateOnDemand so nothing runs
+	 * automatically - only triggered manually via AIH_Cube2FlyPlayerController's
+	 * TestPCGGroundcoverValidation exec command, to confirm PCGDynamicMeshData can actually sample
+	 * BakedIslandMesh before any real graph is built on top of that assumption. */
+	UPROPERTY(VisibleAnywhere, Category = "IH|Island")
+	TObjectPtr<UPCGComponent> PCGValidationComponent;
 	/** 2026-09-21: BakedIslandMesh vertex ID -> its ORIGINAL (pre-smoothing) classification position,
 	 * captured once in RunFirstBake right after weld. ApplyDevColorMode's baked-mode-toggle branch
 	 * uses this to re-associate each (now-smoothed, drifted) vertex with the correct classified row

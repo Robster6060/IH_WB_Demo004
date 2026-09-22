@@ -30,6 +30,7 @@ public class IH_WB_Demo004 : ModuleRules
 			"GeometryCore",
 			"GeometryFramework",
 			"GeometryScriptingCore",
+			"PCG",
 			// AAIController/UAIBlueprintHelperLibrary for Mannequin troop movement (SimpleMoveToLocation).
 			"AIModule",
 			"NavigationSystem",

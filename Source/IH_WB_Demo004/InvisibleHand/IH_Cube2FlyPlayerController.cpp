@@ -1,6 +1,7 @@
 // Copyright Epic Games, Inc. All Rights Reserved.
 
 #include "IH_Cube2FlyPlayerController.h"
+#include "PCGComponent.h"
 #include "IH_P1C07_SelectableShip.h"
 #include "IH_P1C08_DevPanelStyle.h"
 #include "IH_P1C07_ShipRegistrySubsystem.h"
@@ -4130,6 +4131,61 @@ void AIH_Cube2FlyPlayerController::TestProximityTessellation(float RadiusCm)
 		TEXT("TestProximityTessellation: running on nearest baked island (dist=%.0fcm) at camera location, radius=%.0fcm."),
 		NearestDistCm, RadiusCm);
 	NearestBaked->RunProximityTessellation(CameraLocation, RadiusCm);
+}
+
+void AIH_Cube2FlyPlayerController::TestPCGGroundcoverValidation()
+{
+	UWorld* World = GetWorld();
+	AIH_WB_Demo004GameMode* GM = World ? World->GetAuthGameMode<AIH_WB_Demo004GameMode>() : nullptr;
+	if (!GM)
+	{
+		return;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	AIH_WB_IslandActor* NearestBaked = nullptr;
+	float NearestDistCm = TNumericLimits<float>::Max();
+	for (const TObjectPtr<AIH_WB_IslandActor>& Island : GM->GetSpawnedIslands())
+	{
+		if (!Island || !Island->IsFirstBaked())
+		{
+			continue;
+		}
+		const float DistCm = FVector::Dist(CameraLocation, Island->GetMainLandCentroidWorldCm());
+		if (DistCm < NearestDistCm)
+		{
+			NearestDistCm = DistCm;
+			NearestBaked = Island;
+		}
+	}
+
+	if (!NearestBaked)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("TestPCGGroundcoverValidation: no First-Baked island found — bake one first (Shift+drag/rotate an island, Enter) or wait for camera-settle auto-bake."));
+		return;
+	}
+
+	UPCGComponent* PCGComp = NearestBaked->GetPCGValidationComponent();
+	if (!PCGComp)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning, TEXT("TestPCGGroundcoverValidation: nearest baked island has no PCGValidationComponent."));
+		return;
+	}
+	if (!PCGComp->GetGraph())
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("TestPCGGroundcoverValidation: PCGValidationComponent has no graph assigned — did BeginPlay's LoadObject of PCG_ValidateDynamicMesh_Test fail? Check the log for a load warning."));
+		return;
+	}
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("TestPCGGroundcoverValidation: generating on nearest baked island (dist=%.0fcm) — check LogPCG output above/below this line for real vs. empty sampled data."),
+		NearestDistCm);
+	PCGComp->Generate(/*bForce=*/true);
 }
 
 void AIH_Cube2FlyPlayerController::RequestFocusIsland(int32 IslandIndex)

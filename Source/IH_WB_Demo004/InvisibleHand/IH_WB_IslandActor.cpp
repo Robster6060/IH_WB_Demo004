@@ -27,6 +27,8 @@
 #include "GeometryScript/MeshVertexColorFunctions.h"
 #include "GeometryScript/MeshSelectionFunctions.h"
 #include "GeometryScript/MeshSubdivideFunctions.h"
+#include "PCGComponent.h"
+#include "PCGGraph.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "NavigationSystem.h"
 #include "ProceduralMeshComponent.h"
@@ -2595,6 +2597,15 @@ AIH_WB_IslandActor::AIH_WB_IslandActor()
 	SelectionReticle->SetHiddenInGame(true);
 	SelectionReticle->ArrowSize = 9.f;
 	SelectionReticle->ArrowColor = FColor(0, 255, 255);
+
+	// 2026-09-22 (IH_WB_PCG_Architecture_Canon.md, Phase 0 validation) - graph reference set at
+	// BeginPlay via LoadObject (this file's established asset-loading pattern, e.g.
+	// LoadNaturalisticGroundParentMaterial), not here, since constructor-time LoadObject on
+	// not-yet-guaranteed-to-exist content is worth avoiding.
+	// UPCGComponent is a plain UActorComponent (not a USceneComponent - no SetupAttachment/transform
+	// of its own), so it just needs to exist on the actor, no scene-graph attachment.
+	PCGValidationComponent = CreateDefaultSubobject<UPCGComponent>(TEXT("PCGValidationComponent"));
+	PCGValidationComponent->GenerationTrigger = EPCGComponentGenerationTrigger::GenerateOnDemand;
 }
 
 void AIH_WB_IslandActor::BeginPlay()
@@ -2602,6 +2613,18 @@ void AIH_WB_IslandActor::BeginPlay()
 	Super::BeginPlay();
 	RegisterCollision();
 	RefreshMinimapCoastline();
+
+	// Phase 0 validation only (IH_WB_PCG_Architecture_Canon.md) - GenerateOnDemand means nothing
+	// runs from this until TestPCGGroundcoverValidation (AIH_Cube2FlyPlayerController) calls
+	// Generate() explicitly.
+	if (PCGValidationComponent)
+	{
+		if (UPCGGraphInterface* ValidationGraph = LoadObject<UPCGGraphInterface>(
+			nullptr, TEXT("/Game/InvisibleHand/PCG/PCG_ValidateDynamicMesh_Test.PCG_ValidateDynamicMesh_Test")))
+		{
+			PCGValidationComponent->SetGraph(ValidationGraph);
+		}
+	}
 
 	// Camera-settle terrain-detail tick: auto-bake, then ongoing proximity-tessellation upkeep once
 	// baked (see CheckTerrainDetailAutoTrigger's own comment for why this can't reuse PGC's own

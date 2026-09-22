@@ -48,6 +48,13 @@ public:
 	 * visible cracks at the patch boundary before this gets wired into the real settle-gated tick. */
 	UFUNCTION(Exec)
 	void TestProximityTessellation(float RadiusCm = 3000.f);
+	/** 2026-09-22 (IH_WB_PCG_Architecture_Canon.md, Phase 0): triggers the nearest baked island's
+	 * PCGValidationComponent (GenerateOnDemand, does nothing until called) and logs the resulting
+	 * point count - confirms PCGDynamicMeshData can actually sample BakedIslandMesh before any real
+	 * PGC groundcover graph is built on that assumption. Type "TestPCGGroundcoverValidation" in the
+	 * in-game console (~) while near a First-Baked island. */
+	UFUNCTION(Exec)
+	void TestPCGGroundcoverValidation();
 	/** 2026-09-21: keeps the fly camera from dipping below registered island/stamp terrain — called
 	 * every PlayerTick. See its own .cpp comment for why it's scoped to island collision specifically
 	 * rather than a blanket ECC_WorldStatic trace (the ocean plane shares that channel), and for the
