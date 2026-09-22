@@ -126,15 +126,14 @@ public:
 	 * Game Map forward-compatibility, per canon doc). */
 	void RunFirstBake();
 	bool IsFirstBaked() const { return bFirstBaked; }
-	/** 2026-09-21 (camera-settle proximity tessellation, Phase C): densifies+smooths a local patch of
-	 * the ALREADY-BAKED mesh around WorldCenter, replacing whatever's currently displayed with a
-	 * FRESH copy re-derived from FirstBakeSourceMesh every call (never edits the live mesh in place -
-	 * see FirstBakeSourceMesh's own comment for why: avoids unbounded re-tessellation if called
+	/** 2026-09-21 (camera-settle proximity tessellation): densifies+smooths a local patch of the
+	 * ALREADY-BAKED mesh around WorldCenter, replacing whatever's currently displayed with a FRESH
+	 * copy re-derived from FirstBakeSourceMesh every call (never edits the live mesh in place - see
+	 * FirstBakeSourceMesh's own comment for why: avoids unbounded re-tessellation if called
 	 * repeatedly over the same spot, and gives "revert when camera moves away" for free). No-op if
-	 * this island hasn't been baked yet. NOT yet wired into any automatic tick - manual-only for now
-	 * (see AIH_Cube2FlyPlayerController's TestProximityTessellation exec command) pending a direct
-	 * PIE check that ApplySelectiveTessellation's ConcentricRings pattern doesn't leave cracks at the
-	 * patch boundary, per this round's plan. */
+	 * this island hasn't been baked yet. PIE-confirmed crack-free at the patch boundary before being
+	 * wired into CheckTerrainDetailAutoTrigger's settle-gated tick; also still callable manually via
+	 * AIH_Cube2FlyPlayerController::TestProximityTessellation for ad hoc testing. */
 	void RunProximityTessellation(const FVector& WorldCenter, float RadiusCm);
 	/** Reverts to IslandMesh's own rendering/collision, discarding BakedIslandMesh's stale content
 	 * (still resident, just hidden — RunFirstBake will overwrite it via SetMesh on the next bake).
@@ -179,14 +178,15 @@ protected:
 	void UnregisterCollision();
 	void BuildPGCEligibilityCache();
 	void RefreshPGCGroundcoverProximity();
-	/** 2026-09-21: camera-settle auto-bake trigger — decoupled from RefreshPGCGroundcoverProximity's
-	 * own timer on purpose, since that one only runs while PGC DEV View mode is active/visible
+	/** 2026-09-21: camera-settle auto-bake trigger, expanded to also drive ongoing proximity-
+	 * tessellation upkeep once baked — decoupled from RefreshPGCGroundcoverProximity's own timer on
+	 * purpose, since that one only runs while PGC DEV View mode is active/visible
 	 * (ApplyPGCScatterVisibility) and early-returns before doing anything if PGCEligibleTris is
-	 * empty, neither of which should gate First Bake. Runs its own lightweight always-on timer
-	 * (started in BeginPlay), self-terminating the moment bFirstBaked becomes true via EITHER this
-	 * trigger or the existing explicit-commit one (UIH_P1C08_CoastlineTuningSubsystem::
-	 * ApplyActiveDraft) — nothing left to check once an island is baked. */
-	void CheckFirstBakeAutoTrigger();
+	 * empty, neither of which should gate First Bake or tessellation. Runs its own lightweight
+	 * always-on timer (started in BeginPlay) that never self-terminates (unlike the original
+	 * bake-only version of this function) — it keeps running after bFirstBaked becomes true, since
+	 * it's then responsible for re-tessellating the local patch as the camera moves/resettles. */
+	void CheckTerrainDetailAutoTrigger();
 	UHierarchicalInstancedStaticMeshComponent* GetOrCreatePGCGroundcoverHISM(UStaticMesh* Mesh);
 	FVector2D LocalCmToWorldCm(const FVector2D& LocalCm) const;
 	/**
@@ -307,11 +307,16 @@ protected:
 	float PGCTimeBelowSettleSpeedSec = 0.f;
 	FTimerHandle PGCProximityRefreshTimerHandle;
 
-	/** First-Bake auto-trigger's own settle state — separate from PGC's (see
-	 * CheckFirstBakeAutoTrigger's own comment for why they can't share PGC's timer). */
+	/** Terrain-detail auto-trigger's own settle state — separate from PGC's (see
+	 * CheckTerrainDetailAutoTrigger's own comment for why they can't share PGC's timer). Drives BOTH
+	 * the camera-settle First Bake trigger and, once baked, ongoing proximity-tessellation upkeep. */
 	FVector LastFirstBakeTriggerTickLocalPos = FVector(TNumericLimits<float>::Max());
 	float FirstBakeTriggerTimeBelowSettleSpeedSec = 0.f;
 	FTimerHandle FirstBakeAutoTriggerTimerHandle;
+	/** Local-space camera position at the last RunProximityTessellation call — gates re-tessellation
+	 * to only run once the camera has moved meaningfully since (same PGCRefreshMoveThresholdCm-style
+	 * guard PGC groundcover uses), not every settle-tick while genuinely stationary. */
+	FVector LastTessellationLocalPos = FVector(TNumericLimits<float>::Max());
 
 	/** 2026-09-20: full-suspend layer on top of the settle gate above. The settle gate only ever
 	 * skips the EXPENSIVE rescatter branch — RefreshPGCGroundcoverProximity itself (one FApp::

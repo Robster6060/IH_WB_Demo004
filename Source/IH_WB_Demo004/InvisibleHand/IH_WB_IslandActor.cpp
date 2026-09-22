@@ -2603,13 +2603,14 @@ void AIH_WB_IslandActor::BeginPlay()
 	RegisterCollision();
 	RefreshMinimapCoastline();
 
-	// Camera-settle auto-bake: always-on, self-terminating once baked (see CheckFirstBakeAutoTrigger's
-	// own comment for why this can't reuse PGC's own settle timer). Interval is a literal, not
+	// Camera-settle terrain-detail tick: auto-bake, then ongoing proximity-tessellation upkeep once
+	// baked (see CheckTerrainDetailAutoTrigger's own comment for why this can't reuse PGC's own
+	// settle timer). Always-on, never self-terminates. Interval is a literal, not
 	// IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec, because that constant is declared
 	// later in this file than BeginPlay() (this file compiles top-to-bottom in one pass) — must match
 	// that constant's actual value (0.25f) if it's ever retuned.
 	GetWorldTimerManager().SetTimer(FirstBakeAutoTriggerTimerHandle, this,
-		&AIH_WB_IslandActor::CheckFirstBakeAutoTrigger, 0.25f, true);
+		&AIH_WB_IslandActor::CheckTerrainDetailAutoTrigger, 0.25f, true);
 }
 
 void AIH_WB_IslandActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -2925,6 +2926,10 @@ namespace IH_WB_IslandActorPrivate
 	// same near-zero game-thread check either way); groundcover pops in once the player/camera
 	// actually stops or holds a fixed target, exactly like the streaming pattern this project's own
 	// PCG-style proximity design was already modeled on.
+	// 2026-09-21: radius for RunProximityTessellation's local patch, used by the auto-tick
+	// (CheckTerrainDetailAutoTrigger) - matches the default used by the manual
+	// TestProximityTessellation console command that first validated this crack-free in PIE.
+	static constexpr float ProximityTessellationRadiusCm = 3000.f; // 30 m
 	static constexpr float PGCSettleSpeedCmPerSec = 150.f; // 1.5 m/s
 	// 2026-09-21: shortened from 0.75s per user feedback that the pop-in delay after stopping was
 	// noticeable. 0.3s (just over one refresh interval) is still a deliberate "camera has actually
@@ -3263,31 +3268,27 @@ void AIH_WB_IslandActor::RefreshPGCGroundcoverProximity()
 		TankIslandIndex, TotalInstances, PGCGroundcoverHISMs.Num());
 }
 
-// 2026-09-21: camera-settle auto-bake. Deliberately its own always-on timer (started in BeginPlay,
-// unconditional) rather than piggybacking on RefreshPGCGroundcoverProximity's — that one only runs
+// 2026-09-21: camera-settle auto-bake, expanded to also drive proximity-tessellation upkeep once
+// baked. Deliberately its own always-on timer (started in BeginPlay, unconditional, NEVER self-
+// terminates) rather than piggybacking on RefreshPGCGroundcoverProximity's — that one only runs
 // while PGC DEV View mode is the active/visible mode (ApplyPGCScatterVisibility), and early-returns
-// before any settle-check at all if PGCEligibleTris is empty. First Bake shouldn't depend on either:
-// it's a core terrain-shape mechanic, not a PGC-scatter-specific one, so a player who's toggled to
-// BANDS/BIOME (DEV-only) or whose island has no real groundcover data should still get their islands
-// baked as they look around. Self-terminates (clears its own timer) the instant bFirstBaked is true,
-// via EITHER this trigger or the pre-existing explicit-commit one.
-void AIH_WB_IslandActor::CheckFirstBakeAutoTrigger()
+// before any settle-check at all if PGCEligibleTris is empty. Neither First Bake nor tessellation
+// should depend on either: they're core terrain-shape mechanics, not PGC-scatter-specific ones, so a
+// player who's toggled to BANDS/BIOME (DEV-only) or whose island has no real groundcover data should
+// still get their islands baked and detailed as they look around.
+void AIH_WB_IslandActor::CheckTerrainDetailAutoTrigger()
 {
-	if (bFirstBaked)
-	{
-		GetWorldTimerManager().ClearTimer(FirstBakeAutoTriggerTimerHandle);
-		return;
-	}
 	const APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0);
 	if (!CameraManager)
 	{
 		return;
 	}
-	const FVector LocalCamPos = GetActorTransform().InverseTransformPosition(CameraManager->GetCameraLocation());
+	const FVector CameraWorldPos = CameraManager->GetCameraLocation();
+	const FVector LocalCamPos = GetActorTransform().InverseTransformPosition(CameraWorldPos);
 
 	// Same settle-gate shape as RefreshPGCGroundcoverProximity (instantaneous speed vs. the previous
 	// tick; any tick above threshold resets the accumulator) - reused constants, since there's no
-	// reason for First Bake's "camera has stopped" definition to differ from PGC's.
+	// reason for "camera has stopped" to differ between PGC, First Bake, and tessellation.
 	const bool bHasPriorTick = LastFirstBakeTriggerTickLocalPos.X != TNumericLimits<float>::Max();
 	const float SpeedCmPerSec = bHasPriorTick
 		? FVector::Dist(LocalCamPos, LastFirstBakeTriggerTickLocalPos) / IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec
@@ -3306,15 +3307,31 @@ void AIH_WB_IslandActor::CheckFirstBakeAutoTrigger()
 
 	// Proximity: camera within streaming distance of the island's REAL landmass footprint, not just
 	// its actor origin (a large island's origin can be far from where the camera is actually looking).
-	const float DistCm = FVector::Dist(CameraManager->GetCameraLocation(), GetMainLandCentroidWorldCm());
+	const float DistCm = FVector::Dist(CameraWorldPos, GetMainLandCentroidWorldCm());
 	if (DistCm > GetMainLandFootprintRadiusCm() + IH_WB_IslandActorPrivate::PGCStreamRadiusCm)
 	{
 		return;
 	}
 
-	UE_LOG(LogIH_WB_Demo004, Log,
-		TEXT("First Bake: auto-triggered by camera settle — island %d."), TankIslandIndex);
-	RunFirstBake();
+	if (!bFirstBaked)
+	{
+		UE_LOG(LogIH_WB_Demo004, Log,
+			TEXT("First Bake: auto-triggered by camera settle — island %d."), TankIslandIndex);
+		RunFirstBake();
+		return;
+	}
+
+	// Already baked: re-tessellate the local patch around the settled camera, but only once it has
+	// moved meaningfully since the LAST tessellation pass (same PGCRefreshMoveThresholdCm-style guard
+	// PGC groundcover uses) — avoids redoing identical work every 0.25s tick while genuinely
+	// stationary looking at the same spot.
+	if (FVector::DistSquared(LocalCamPos, LastTessellationLocalPos)
+		< FMath::Square(IH_WB_IslandActorPrivate::PGCRefreshMoveThresholdCm))
+	{
+		return;
+	}
+	LastTessellationLocalPos = LocalCamPos;
+	RunProximityTessellation(CameraWorldPos, IH_WB_IslandActorPrivate::ProximityTessellationRadiusCm);
 }
 
 // 2026-09-20: see PGCTimeIdleForSuspendSec's own header comment - this is what actually stops the
