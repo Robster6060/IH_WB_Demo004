@@ -26,8 +26,10 @@ namespace
 	bool GCloudsVisible = false;
 	/** Fidelity grabs: lower sun + darker TOPO (default OFF so L1 can A/B). */
 	bool GGrabContrastEnabled = false;
-	/** Default BANDS - matches the pre-toggle always-on behavior exactly. */
-	IHDevViewRuntime::EIHDevColorMode GDevColorMode = IHDevViewRuntime::EIHDevColorMode::Bands;
+	/** 2026-09-21: Default PGC - the real naturalistic ground material is now the intended default
+	 * player-facing look (confirmed working after the vertex-color accumulation fix). BANDS/BIOME
+	 * stay available as DEV-only diagnostic views via the toggle, just no longer the default. */
+	IHDevViewRuntime::EIHDevColorMode GDevColorMode = IHDevViewRuntime::EIHDevColorMode::PGC;
 }
 #endif
 
@@ -51,7 +53,9 @@ bool IHInvisibleHandSpec::DevView_AreContoursEnabled()
 namespace IHDevViewRuntime
 {
 #if UE_BUILD_SHIPPING
-	EIHDevColorMode GetDevColorMode() { return EIHDevColorMode::Bands; }
+	// 2026-09-21: shipped/packaged builds have no DEV View UI to toggle this, so the terrain must
+	// always render via the real naturalistic ground material (PGC), not BANDS' flat debug coloring.
+	EIHDevColorMode GetDevColorMode() { return EIHDevColorMode::PGC; }
 	void SetDevColorMode(EIHDevColorMode) {}
 	void ApplyDevColorModeToWorld(UWorld*) {}
 	bool IsOceanVisible() { return true; }
