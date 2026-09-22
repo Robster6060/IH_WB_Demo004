@@ -5829,6 +5829,15 @@ void AIH_WB_IslandActor::BuildMeshesFromCellGraph(int32 MasterSeed)
 		ClassifiedBiomeTris, DistinctBiomeCount, MixedClampTris, BiomeSectionRowIndices,
 		IHDevViewRuntime::GetDevColorMode());
 
+	// 2026-09-21: ApplyPGCScatterVisibility is otherwise ONLY ever called from ApplyDevColorMode
+	// (the DEV View checkbox toggle handler) - fine when BANDS was the default (the user had to
+	// actively click PGC to see it, which fired this as a side effect), but now that PGC IS the
+	// default mode, the checkbox starts already-checked and the user never clicks it, so scatter
+	// would otherwise never activate at all even though the material correctly shows PGC's ground
+	// texture (that part comes from ApplyDtBiomeColorBands just above, a separate mechanism).
+	// Explicitly match scatter visibility to whatever mode this island was just generated in.
+	ApplyPGCScatterVisibility(IHDevViewRuntime::GetDevColorMode() == IHDevViewRuntime::EIHDevColorMode::PGC);
+
 	// Diagnostic (plan Addendum 1, Bug 2): MainCoastPolylineLocalCm and ShelfPolylineLocalCm are
 	// each picked independently as "largest loop" from graphs that can have hundreds of loops
 	// (Bug 3) - if they don't spatially correspond to the same landmass, the loft below stretches
