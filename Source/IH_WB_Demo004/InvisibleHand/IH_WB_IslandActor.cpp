@@ -2944,8 +2944,12 @@ namespace IH_WB_IslandActorPrivate
 	static constexpr float PGCIdleWatchdogIntervalSec = 1.f;
 	// Instances per square meter within the active (near-camera) radius. Unlike the retired whole-
 	// island density, this only ever has to cover a few thousand m² at a time, so it can be tuned
-	// for how it actually looks up close rather than diluted across the whole island.
-	static constexpr float PGCGroundcoverCloseDensityPerSqM = 0.15f;
+	// for how it actually looks up close rather than diluted across the whole island. 2026-09-22:
+	// doubled from 0.15 now that RefreshPGCGroundcoverProximity batches via AddInstances instead of
+	// one AddInstance() call per instance - the per-instance insert cost that made a higher density
+	// expensive before is mostly gone, so this is a reasonable first bump to try in PIE; tune further
+	// from here rather than treating 0.3 as final.
+	static constexpr float PGCGroundcoverCloseDensityPerSqM = 0.3f;
 	// Safety net only - a single refresh populating this many instances would mean the stream
 	// radius is misconfigured relative to this island's terrain resolution, not normal operation.
 	static constexpr int32 PGCGroundcoverMaxInstancesPerRefresh = 80000;
@@ -3005,7 +3009,12 @@ UHierarchicalInstancedStaticMeshComponent* AIH_WB_IslandActor::GetOrCreatePGCGro
 	HISM->SetStaticMesh(Mesh);
 	HISM->SetupAttachment(SceneRoot);
 	HISM->SetCollisionEnabled(ECollisionEnabled::NoCollision);
-	HISM->SetCastShadow(true);
+	// 2026-09-22: small decorative groundcover doesn't need to cast shadows or contribute to
+	// distance-field/indirect lighting - standard cost cuts for dense small-object instance scatter,
+	// per user request to retire shadow/lighting overhead here specifically.
+	HISM->SetCastShadow(false);
+	HISM->bAffectDistanceFieldLighting = false;
+	HISM->bAffectDynamicIndirectLighting = false;
 	HISM->RegisterComponent();
 	PGCGroundcoverHISMs.Add(Key, HISM);
 	return HISM;
@@ -3198,9 +3207,20 @@ void AIH_WB_IslandActor::RefreshPGCGroundcoverProximity()
 		FMath::FloorToInt(LocalCamPos.Y / IH_WB_IslandActorPrivate::PGCRefreshMoveThresholdCm));
 	FRandomStream Rng(static_cast<int32>(HashCombine(GetUniqueID(), GetTypeHash(SeedCell))));
 
+	// 2026-09-22: batch per-HISM instead of one AddInstance() call per instance - HISM's single-
+	// insert path does real incremental cluster-tree maintenance work per call, which is the actual
+	// source of the visible "spawn lag" at any real instance count. AddInstances (plural) builds the
+	// tree once for the whole batch. Also lets density go up without a proportional lag increase,
+	// since batch insertion cost scales much better than N individual inserts did.
+	TMap<UHierarchicalInstancedStaticMeshComponent*, TArray<FTransform>> PendingByHism;
 	int32 TotalInstances = 0;
+	bool bHitInstanceCap = false;
 	for (const FIHPGCEligibleTri& Tri : PGCEligibleTris)
 	{
+		if (bHitInstanceCap)
+		{
+			break;
+		}
 		if (FVector::Dist(LocalCamPos, Tri.Centroid)
 			> IH_WB_IslandActorPrivate::PGCStreamRadiusCm + Tri.BoundingRadiusCm)
 		{
@@ -3228,14 +3248,40 @@ void AIH_WB_IslandActor::RefreshPGCGroundcoverProximity()
 				UE_LOG(LogIH_WB_Demo004, Warning,
 					TEXT("PGC groundcover: hit %d-instance safety cap on island %d's proximity refresh."),
 					IH_WB_IslandActorPrivate::PGCGroundcoverMaxInstancesPerRefresh, TankIslandIndex);
-				return;
+				bHitInstanceCap = true;
+				break;
 			}
 
 			// Uniform random point in the triangle via sqrt-barycentric sampling.
 			const float R1 = FMath::Sqrt(Rng.FRand());
 			const float R2 = Rng.FRand();
-			const FVector LocalPos =
+			FVector LocalPos =
 				Tri.P0 * (1.f - R1) + Tri.P1 * (R1 * (1.f - R2)) + Tri.P2 * (R1 * R2);
+
+			// 2026-09-22: Tri.P0-P2 are cached ONCE from IslandMesh's ORIGINAL geometry
+			// (BuildPGCEligibilityCache) and never updated - fine pre-bake (IslandMesh IS what's
+			// rendered), but RunProximityTessellation's local patch reshapes BakedIslandMesh's
+			// actual surface after that cache was built, so instances landing in a tessellated area
+			// can float above or sink below the real (now-changed) terrain. Rather than re-trace
+			// EVERY instance every refresh (a real cost at hundreds-to-thousands of instances per
+			// settle, working against the "reduce spawn lag" ask), only correct height for instances
+			// that actually fall within the last-tessellated patch - a small, bounded area, so the
+			// added trace cost scales with tessellation's own already-bounded scope, not PGC's.
+			if (bFirstBaked && BakedIslandMesh
+				&& LastTessellationLocalPos.X != TNumericLimits<float>::Max()
+				&& FVector::DistSquared(LocalPos, LastTessellationLocalPos)
+					<= FMath::Square(IH_WB_IslandActorPrivate::ProximityTessellationRadiusCm))
+			{
+				const FVector WorldPos = GetActorTransform().TransformPosition(LocalPos);
+				const FVector TraceStart(WorldPos.X, WorldPos.Y, WorldPos.Z + 5000.f);
+				const FVector TraceEnd(WorldPos.X, WorldPos.Y, WorldPos.Z - 5000.f);
+				FHitResult Hit;
+				FCollisionQueryParams TraceParams(SCENE_QUERY_STAT(PGCInstanceHeightCorrect), false);
+				if (BakedIslandMesh->LineTraceComponent(Hit, TraceStart, TraceEnd, TraceParams))
+				{
+					LocalPos.Z = GetActorTransform().InverseTransformPosition(Hit.ImpactPoint).Z;
+				}
+			}
 
 			const FName Tag = Rec->groundcover[Rng.RandRange(0, Rec->groundcover.Num() - 1)];
 			const FIHPGCMeshCatalogRow* CatalogRow =
@@ -3258,8 +3304,17 @@ void AIH_WB_IslandActor::RefreshPGCGroundcoverProximity()
 			const float Scale = Rng.FRandRange(CatalogRow->uniformScaleMin, CatalogRow->uniformScaleMax);
 			const float Yaw = CatalogRow->bRandomizeYaw ? Rng.FRandRange(0.f, 360.f) : 0.f;
 			const FTransform InstanceXform(FRotator(0.f, Yaw, 0.f), LocalPos, FVector(Scale));
-			HISM->AddInstance(InstanceXform);
+			PendingByHism.FindOrAdd(HISM).Add(InstanceXform);
 			++TotalInstances;
+		}
+	}
+
+	for (const TPair<UHierarchicalInstancedStaticMeshComponent*, TArray<FTransform>>& Pending : PendingByHism)
+	{
+		if (Pending.Key && Pending.Value.Num() > 0)
+		{
+			Pending.Key->AddInstances(Pending.Value, /*bShouldReturnIndices=*/false, /*bWorldSpace=*/false,
+				/*bUpdateNavigation=*/false);
 		}
 	}
 
