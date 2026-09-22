@@ -2758,9 +2758,22 @@ void AIH_WB_IslandActor::ApplyDevColorMode(const IHDevViewRuntime::EIHDevColorMo
 			}
 			const FVector4 Value = IH_WB_IslandActorPrivate::GetVertexColorValueForRow(
 				*Rows[BiomeSectionRowIndices[Section]], Mode);
-			for (const FProcMeshVertex& V : ProcSection->ProcVertexBuffer)
+			// BUG FIX (2026-09-21): every section's ProcVertexBuffer is the SAME shared whole-island
+			// buffer (BuildMeshesFromCellGraph gives every classified row its own section but reuses
+			// one shared vertex array - "Shared vert buffers; per-matched-row index lists"), NOT that
+			// section's own vertices. Iterating it directly accumulated every section's row value into
+			// EVERY vertex on the island, corrupting the whole island's ColorAccum into one uniform
+			// blended average of all rows (confirmed in PIE: BIOME/PGC rendered solid gray/uniform,
+			// while ApplyDtBiomeColorBands - which correctly iterates per-triangle via ProcIndexBuffer,
+			// see its own loop above - stayed correct). Mirror that same per-triangle-index pattern
+			// here instead of touching the raw vertex buffer wholesale.
+			for (const uint32 Idx : ProcSection->ProcIndexBuffer)
 			{
-				IH_WB_IslandActorPrivate::AccumulateVertexColorValue(ColorAccum, V.Position, Value);
+				if (ProcSection->ProcVertexBuffer.IsValidIndex(Idx))
+				{
+					IH_WB_IslandActorPrivate::AccumulateVertexColorValue(
+						ColorAccum, ProcSection->ProcVertexBuffer[Idx].Position, Value);
+				}
 			}
 		}
 		UE_LOG(LogIH_WB_Demo004, Log,
