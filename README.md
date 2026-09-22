@@ -25,6 +25,12 @@ See `Content/InvisibleHand/IH_WB_Phase_Order_Canon.md` for the accepted phase se
 (RealmSeed → First Bake → Terrain Stamps → Latitude → Hydrology/Final Bake → Sector Fabric)
 and the Nanite/World Partition bake architecture.
 
+## Safe Junctures
+
+See `Content/InvisibleHand/IH_WB_DevView_BandsBiomePgc_Juncture_2026-09-21.md` for the latest
+confirmed-working checkpoint (DEV View BANDS/BIOME/PGC) and the recurring `ProcVertexBuffer`
+shared-buffer lesson it documents.
+
 ## Build
 
 Open `IH_WB_Demo002.uproject` in UE 5.8, or:
