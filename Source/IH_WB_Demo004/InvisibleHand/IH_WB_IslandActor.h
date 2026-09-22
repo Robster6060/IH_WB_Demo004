@@ -18,6 +18,7 @@ class AIH_TerrainStampActor;
 class UHierarchicalInstancedStaticMeshComponent;
 class UStaticMesh;
 class UDynamicMeshComponent;
+namespace UE::Geometry { class FDynamicMesh3; }
 
 /** One groundcover-eligible triangle, cached once per island so PGC proximity refreshes never have
  * to re-classify terrain or re-walk DT_ASLSlopeBiome after the initial cache build.
@@ -125,6 +126,16 @@ public:
 	 * Game Map forward-compatibility, per canon doc). */
 	void RunFirstBake();
 	bool IsFirstBaked() const { return bFirstBaked; }
+	/** 2026-09-21 (camera-settle proximity tessellation, Phase C): densifies+smooths a local patch of
+	 * the ALREADY-BAKED mesh around WorldCenter, replacing whatever's currently displayed with a
+	 * FRESH copy re-derived from FirstBakeSourceMesh every call (never edits the live mesh in place -
+	 * see FirstBakeSourceMesh's own comment for why: avoids unbounded re-tessellation if called
+	 * repeatedly over the same spot, and gives "revert when camera moves away" for free). No-op if
+	 * this island hasn't been baked yet. NOT yet wired into any automatic tick - manual-only for now
+	 * (see AIH_Cube2FlyPlayerController's TestProximityTessellation exec command) pending a direct
+	 * PIE check that ApplySelectiveTessellation's ConcentricRings pattern doesn't leave cracks at the
+	 * patch boundary, per this round's plan. */
+	void RunProximityTessellation(const FVector& WorldCenter, float RadiusCm);
 	/** Reverts to IslandMesh's own rendering/collision, discarding BakedIslandMesh's stale content
 	 * (still resident, just hidden — RunFirstBake will overwrite it via SetMesh on the next bake).
 	 * Call before any in-place terrain regeneration (e.g. RegenerateSingleIsland) that rebuilds
@@ -168,6 +179,14 @@ protected:
 	void UnregisterCollision();
 	void BuildPGCEligibilityCache();
 	void RefreshPGCGroundcoverProximity();
+	/** 2026-09-21: camera-settle auto-bake trigger — decoupled from RefreshPGCGroundcoverProximity's
+	 * own timer on purpose, since that one only runs while PGC DEV View mode is active/visible
+	 * (ApplyPGCScatterVisibility) and early-returns before doing anything if PGCEligibleTris is
+	 * empty, neither of which should gate First Bake. Runs its own lightweight always-on timer
+	 * (started in BeginPlay), self-terminating the moment bFirstBaked becomes true via EITHER this
+	 * trigger or the existing explicit-commit one (UIH_P1C08_CoastlineTuningSubsystem::
+	 * ApplyActiveDraft) — nothing left to check once an island is baked. */
+	void CheckFirstBakeAutoTrigger();
 	UHierarchicalInstancedStaticMeshComponent* GetOrCreatePGCGroundcoverHISM(UStaticMesh* Mesh);
 	FVector2D LocalCmToWorldCm(const FVector2D& LocalCm) const;
 	/**
@@ -288,6 +307,12 @@ protected:
 	float PGCTimeBelowSettleSpeedSec = 0.f;
 	FTimerHandle PGCProximityRefreshTimerHandle;
 
+	/** First-Bake auto-trigger's own settle state — separate from PGC's (see
+	 * CheckFirstBakeAutoTrigger's own comment for why they can't share PGC's timer). */
+	FVector LastFirstBakeTriggerTickLocalPos = FVector(TNumericLimits<float>::Max());
+	float FirstBakeTriggerTimeBelowSettleSpeedSec = 0.f;
+	FTimerHandle FirstBakeAutoTriggerTimerHandle;
+
 	/** 2026-09-20: full-suspend layer on top of the settle gate above. The settle gate only ever
 	 * skips the EXPENSIVE rescatter branch — RefreshPGCGroundcoverProximity itself (one FApp::
 	 * HasFocus() call + one FVector::Dist) still fires every PGCProximityRefreshIntervalSec forever,
@@ -328,6 +353,21 @@ protected:
 	UPROPERTY(Transient)
 	TObjectPtr<UDynamicMeshComponent> BakedIslandMesh;
 	bool bFirstBaked = false;
+	/** 2026-09-21: BakedIslandMesh vertex ID -> its ORIGINAL (pre-smoothing) classification position,
+	 * captured once in RunFirstBake right after weld. ApplyDevColorMode's baked-mode-toggle branch
+	 * uses this to re-associate each (now-smoothed, drifted) vertex with the correct classified row
+	 * when recomputing vertex colors for a newly-selected DEV View mode - sampling the accumulator by
+	 * the vertex's CURRENT (post-smooth) position would miss, since smoothing can move a vertex well
+	 * past the 1cm accumulator quantization grid. Indexed by vertex ID; stable across weld+smooth
+	 * (smoothing moves vertices, it doesn't renumber or delete them). */
+	TArray<FVector> BakedVertexClassificationPositions;
+	/** 2026-09-21: BakedIslandMesh's mesh state immediately after RunFirstBake's weld+smooth+normals
+	 * pass (the final displayed shape) - the "source of truth" camera-settle local tessellation
+	 * (Phase C, not yet implemented) always re-derives a fresh patch from, rather than incrementally
+	 * modifying whatever's currently displayed (avoids unbounded re-tessellation if the camera
+	 * settles over the same spot repeatedly). Plain FDynamicMesh3, not a UDynamicMesh, since it's
+	 * never directly rendered. */
+	TSharedPtr<UE::Geometry::FDynamicMesh3> FirstBakeSourceMesh;
 
 	static bool bAslContourRibbonBakeDeferred;
 };

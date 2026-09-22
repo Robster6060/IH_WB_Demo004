@@ -24,6 +24,9 @@
 #include "GeometryScript/MeshRepairFunctions.h"
 #include "GeometryScript/MeshDeformFunctions.h"
 #include "GeometryScript/MeshNormalsFunctions.h"
+#include "GeometryScript/MeshVertexColorFunctions.h"
+#include "GeometryScript/MeshSelectionFunctions.h"
+#include "GeometryScript/MeshSubdivideFunctions.h"
 #include "DynamicMesh/DynamicMeshAttributeSet.h"
 #include "NavigationSystem.h"
 #include "ProceduralMeshComponent.h"
@@ -1934,6 +1937,25 @@ namespace IH_WB_IslandActorPrivate
 		return FColor::Black;
 	}
 
+	/** Same lookup as SampleAccumulatedVertexColor, but returns the raw 0-1 FLinearColor instead of
+	 * packing to FColor bytes — GeometryScript's SetMeshPerVertexColors (the BakedIslandMesh/
+	 * UDynamicMesh equivalent of UpdateMeshSection's FColor vertex buffer) takes FLinearColor. */
+	static FLinearColor SampleAccumulatedVertexColorLinear(
+		const TMap<FIntPoint, TPair<FVector4, int32>>& Accum, const FVector& Position)
+	{
+		constexpr double QuantCm = 1.0;
+		const FIntPoint Key(FMath::RoundToInt32(Position.X / QuantCm), FMath::RoundToInt32(Position.Y / QuantCm));
+		if (const TPair<FVector4, int32>* Entry = Accum.Find(Key))
+		{
+			if (Entry->Value > 0)
+			{
+				const FVector4 Avg = Entry->Key / static_cast<float>(Entry->Value);
+				return FLinearColor(Avg.X, Avg.Y, Avg.Z, Avg.W);
+			}
+		}
+		return FLinearColor::Black;
+	}
+
 	/** Resolves the live DT_ASLSlopeBiome rows once per island build (not per-triangle) — Outer
 	 * must be a UObject whose GetWorld() reaches a live UGameInstance (true for
 	 * AIH_WB_IslandActor). Every row is a real biome band post-IH-DEC-054 (the SEA LEVEL marker
@@ -2580,6 +2602,14 @@ void AIH_WB_IslandActor::BeginPlay()
 	Super::BeginPlay();
 	RegisterCollision();
 	RefreshMinimapCoastline();
+
+	// Camera-settle auto-bake: always-on, self-terminating once baked (see CheckFirstBakeAutoTrigger's
+	// own comment for why this can't reuse PGC's own settle timer). Interval is a literal, not
+	// IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec, because that constant is declared
+	// later in this file than BeginPlay() (this file compiles top-to-bottom in one pass) — must match
+	// that constant's actual value (0.25f) if it's ever retuned.
+	GetWorldTimerManager().SetTimer(FirstBakeAutoTriggerTimerHandle, this,
+		&AIH_WB_IslandActor::CheckFirstBakeAutoTrigger, 0.25f, true);
 }
 
 void AIH_WB_IslandActor::EndPlay(const EEndPlayReason::Type EndPlayReason)
@@ -2714,79 +2744,69 @@ void AIH_WB_IslandActor::ApplyDevColorMode(const IHDevViewRuntime::EIHDevColorMo
 	{
 		return;
 	}
-	// 2026-09-20 (shared per-vertex-blended terrain material): post-First-Bake, IslandMesh's PMC
-	// sections are hidden and BakedIslandMesh (a UDynamicMeshComponent) renders in their place, but
-	// RunFirstBake doesn't yet carry per-vertex color data into that mesh at all (a separate,
-	// explicitly-flagged follow-up) - so the baked case keeps the OLD one-MID-per-section behavior
-	// (still correct, just not smoothly blended) rather than silently doing nothing. The un-baked
-	// case (the common path - none of this session's testing involved a baked island) gets the real
-	// fix: re-sample every section's vertex colors from a fresh cross-section accumulation and
-	// re-issue via UpdateMeshSection (attribute-only update, no topology/collision rebuild), plus
-	// one shared MID for the whole island instead of one per section.
+	// 2026-09-21: the accumulation pass is identical for baked and un-baked islands - both derive
+	// vertex colors from IslandMesh's still-alive PMC sections (RunFirstBake hides but never
+	// destroys IslandMesh, see its own comment) via the same per-triangle-index pattern (BUG FIX
+	// 2026-09-21: iterating ProcVertexBuffer directly touches the SHARED whole-island buffer every
+	// section reuses, corrupting the accumulation into one flat blended average - see
+	// ApplyDtBiomeColorBands' own matching fix). Only how the RESULT gets applied differs below.
+	TMap<FIntPoint, TPair<FVector4, int32>> ColorAccum;
+	int32 NumSectionsSkippedNoRow = 0;
+	int32 NumSectionsSkippedNoProc = 0;
+	for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
+	{
+		if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
+		{
+			++NumSectionsSkippedNoRow;
+			continue;
+		}
+		const FProcMeshSection* ProcSection = IslandMesh->GetProcMeshSection(Section);
+		if (!ProcSection)
+		{
+			++NumSectionsSkippedNoProc;
+			continue;
+		}
+		const FVector4 Value = IH_WB_IslandActorPrivate::GetVertexColorValueForRow(
+			*Rows[BiomeSectionRowIndices[Section]], Mode);
+		for (const uint32 Idx : ProcSection->ProcIndexBuffer)
+		{
+			if (ProcSection->ProcVertexBuffer.IsValidIndex(Idx))
+			{
+				IH_WB_IslandActorPrivate::AccumulateVertexColorValue(
+					ColorAccum, ProcSection->ProcVertexBuffer[Idx].Position, Value);
+			}
+		}
+	}
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("VertexColor diag (toggle): %d total sections, %d skipped(noRow), %d skipped(noProc)"),
+		BiomeSectionRowIndices.Num(), NumSectionsSkippedNoRow, NumSectionsSkippedNoProc);
+
+	UMaterialInstanceDynamic* SharedMid = IH_WB_IslandActorPrivate::CreateSharedIslandModeMaterial(this, Mode);
+
 	if (bFirstBaked && BakedIslandMesh)
 	{
-		for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
+		// Sample by each vertex's CACHED pre-smoothing classification position, not its current
+		// (post-smooth, drifted) one — smoothing can move a vertex well past ColorAccum's 1cm
+		// quantization grid, which would silently miss and fall back to black. See
+		// BakedVertexClassificationPositions' own comment.
+		UDynamicMesh* DynMesh = BakedIslandMesh->GetDynamicMesh();
+		FGeometryScriptColorList ColorList;
+		const int32 VertCount = BakedVertexClassificationPositions.Num();
+		ColorList.Reset(VertCount);
+		for (int32 VID = 0; VID < VertCount; ++VID)
 		{
-			if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
-			{
-				continue;
-			}
-			if (UMaterialInstanceDynamic* Mid = IH_WB_IslandActorPrivate::CreateIslandBiomeMaterial(
-				this, *Rows[BiomeSectionRowIndices[Section]], Mode))
-			{
-				BakedIslandMesh->SetMaterial(Section, Mid);
-			}
+			ColorList.List->Add(IH_WB_IslandActorPrivate::SampleAccumulatedVertexColorLinear(
+				ColorAccum, BakedVertexClassificationPositions[VID]));
+		}
+		UGeometryScriptLibrary_MeshVertexColorFunctions::SetMeshPerVertexColors(DynMesh, ColorList);
+		BakedIslandMesh->NotifyMeshUpdated();
+		if (SharedMid)
+		{
+			BakedIslandMesh->SetMaterial(0, SharedMid);
 		}
 	}
 	else
 	{
-		TMap<FIntPoint, TPair<FVector4, int32>> ColorAccum;
-		int32 NumSectionsSkippedNoRow = 0;
-		int32 NumSectionsSkippedNoProc = 0;
-		for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
-		{
-			if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
-			{
-				++NumSectionsSkippedNoRow;
-				continue;
-			}
-			const FProcMeshSection* ProcSection = IslandMesh->GetProcMeshSection(Section);
-			if (!ProcSection)
-			{
-				++NumSectionsSkippedNoProc;
-				continue;
-			}
-			const FVector4 Value = IH_WB_IslandActorPrivate::GetVertexColorValueForRow(
-				*Rows[BiomeSectionRowIndices[Section]], Mode);
-			// BUG FIX (2026-09-21): every section's ProcVertexBuffer is the SAME shared whole-island
-			// buffer (BuildMeshesFromCellGraph gives every classified row its own section but reuses
-			// one shared vertex array - "Shared vert buffers; per-matched-row index lists"), NOT that
-			// section's own vertices. Iterating it directly accumulated every section's row value into
-			// EVERY vertex on the island, corrupting the whole island's ColorAccum into one uniform
-			// blended average of all rows (confirmed in PIE: BIOME/PGC rendered solid gray/uniform,
-			// while ApplyDtBiomeColorBands - which correctly iterates per-triangle via ProcIndexBuffer,
-			// see its own loop above - stayed correct). Mirror that same per-triangle-index pattern
-			// here instead of touching the raw vertex buffer wholesale.
-			for (const uint32 Idx : ProcSection->ProcIndexBuffer)
-			{
-				if (ProcSection->ProcVertexBuffer.IsValidIndex(Idx))
-				{
-					IH_WB_IslandActorPrivate::AccumulateVertexColorValue(
-						ColorAccum, ProcSection->ProcVertexBuffer[Idx].Position, Value);
-				}
-			}
-		}
-		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("VertexColor diag (toggle): %d total sections, %d skipped(noRow), %d skipped(noProc)"),
-			BiomeSectionRowIndices.Num(), NumSectionsSkippedNoRow, NumSectionsSkippedNoProc);
-
-		UMaterialInstanceDynamic* SharedMid = IH_WB_IslandActorPrivate::CreateSharedIslandModeMaterial(this, Mode);
-		// TEMP DIAGNOSTIC (2026-09-20): mirrors ApplyDtBiomeColorBands' own diagnostic - the
-		// generation-time path logged sane values, but this toggle path (ApplyDevColorMode) had no
-		// visibility at all, and PGC specifically showed flat/wrong color after toggling to it.
-		UE_LOG(LogIH_WB_Demo004, Log,
-			TEXT("VertexColor diag (toggle): mode=%d, accumMapSize=%d, SharedMid=%s"),
-			static_cast<int32>(Mode), ColorAccum.Num(), SharedMid ? TEXT("valid") : TEXT("NULL"));
 		for (int32 Section = 0; Section < BiomeSectionRowIndices.Num(); ++Section)
 		{
 			if (!Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
@@ -2821,18 +2841,6 @@ void AIH_WB_IslandActor::ApplyDevColorMode(const IHDevViewRuntime::EIHDevColorMo
 			if (SharedMid)
 			{
 				IslandMesh->SetMaterial(Section, SharedMid);
-			}
-
-			if (NewColors.Num() > 0)
-			{
-				int64 SumR = 0, SumG = 0, SumB = 0, SumA = 0;
-				for (const FColor& C : NewColors) { SumR += C.R; SumG += C.G; SumB += C.B; SumA += C.A; }
-				const int32 N = NewColors.Num();
-				UE_LOG(LogIH_WB_Demo004, Log,
-					TEXT("VertexColor diag (toggle): section=%d row=%d verts=%d avg RGBA=(%.1f,%.1f,%.1f,%.1f)"),
-					Section, BiomeSectionRowIndices[Section], N,
-					static_cast<double>(SumR) / N, static_cast<double>(SumG) / N,
-					static_cast<double>(SumB) / N, static_cast<double>(SumA) / N);
 			}
 		}
 	}
@@ -2897,7 +2905,11 @@ namespace IH_WB_IslandActorPrivate
 	// How often (game-thread, no rendering work) to re-check camera position and refresh the
 	// active set - same "cheap periodic timer, not per-Tick" pattern as
 	// AIH_WaterlineOceanAdapter::UpdateShoreManagerVisibilityGating.
-	static constexpr float PGCProximityRefreshIntervalSec = 0.5f;
+	// 2026-09-21: tightened from 0.5s - at the old interval, the settle gate below (needing several
+	// consecutive under-threshold ticks) made the visible delay between the camera actually stopping
+	// and groundcover popping in feel sluggish (~1.25-1.5s worst case). Checking twice as often costs
+	// nothing extra (still just one FVector::Dist per tick) and roughly halves that delay.
+	static constexpr float PGCProximityRefreshIntervalSec = 0.25f;
 	// Only actually refresh once the camera has moved this far since the last refresh - avoids
 	// re-scanning PGCEligibleTris (tens to low hundreds of thousands of entries) every 0.5s while
 	// the camera is sitting still.
@@ -2914,7 +2926,10 @@ namespace IH_WB_IslandActorPrivate
 	// actually stops or holds a fixed target, exactly like the streaming pattern this project's own
 	// PCG-style proximity design was already modeled on.
 	static constexpr float PGCSettleSpeedCmPerSec = 150.f; // 1.5 m/s
-	static constexpr float PGCSettleDurationSec = 0.75f;
+	// 2026-09-21: shortened from 0.75s per user feedback that the pop-in delay after stopping was
+	// noticeable. 0.3s (just over one refresh interval) is still a deliberate "camera has actually
+	// stopped" signal, not something ordinary continuous panning would accidentally satisfy.
+	static constexpr float PGCSettleDurationSec = 0.3f;
 	// 2026-09-20: how long the camera must stay stationary OR the window stay unfocused before the
 	// 0.5s proximity-refresh timer itself is torn down (not merely skipped) — see
 	// AIH_WB_IslandActor::SuspendPGCProximityTimer's own comment.
@@ -3246,6 +3261,60 @@ void AIH_WB_IslandActor::RefreshPGCGroundcoverProximity()
 	UE_LOG(LogIH_WB_Demo004, Log,
 		TEXT("PGC groundcover: island %d proximity refresh - %d instances across %d mesh type(s)."),
 		TankIslandIndex, TotalInstances, PGCGroundcoverHISMs.Num());
+}
+
+// 2026-09-21: camera-settle auto-bake. Deliberately its own always-on timer (started in BeginPlay,
+// unconditional) rather than piggybacking on RefreshPGCGroundcoverProximity's — that one only runs
+// while PGC DEV View mode is the active/visible mode (ApplyPGCScatterVisibility), and early-returns
+// before any settle-check at all if PGCEligibleTris is empty. First Bake shouldn't depend on either:
+// it's a core terrain-shape mechanic, not a PGC-scatter-specific one, so a player who's toggled to
+// BANDS/BIOME (DEV-only) or whose island has no real groundcover data should still get their islands
+// baked as they look around. Self-terminates (clears its own timer) the instant bFirstBaked is true,
+// via EITHER this trigger or the pre-existing explicit-commit one.
+void AIH_WB_IslandActor::CheckFirstBakeAutoTrigger()
+{
+	if (bFirstBaked)
+	{
+		GetWorldTimerManager().ClearTimer(FirstBakeAutoTriggerTimerHandle);
+		return;
+	}
+	const APlayerCameraManager* CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0);
+	if (!CameraManager)
+	{
+		return;
+	}
+	const FVector LocalCamPos = GetActorTransform().InverseTransformPosition(CameraManager->GetCameraLocation());
+
+	// Same settle-gate shape as RefreshPGCGroundcoverProximity (instantaneous speed vs. the previous
+	// tick; any tick above threshold resets the accumulator) - reused constants, since there's no
+	// reason for First Bake's "camera has stopped" definition to differ from PGC's.
+	const bool bHasPriorTick = LastFirstBakeTriggerTickLocalPos.X != TNumericLimits<float>::Max();
+	const float SpeedCmPerSec = bHasPriorTick
+		? FVector::Dist(LocalCamPos, LastFirstBakeTriggerTickLocalPos) / IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec
+		: 0.f;
+	LastFirstBakeTriggerTickLocalPos = LocalCamPos;
+	if (SpeedCmPerSec > IH_WB_IslandActorPrivate::PGCSettleSpeedCmPerSec)
+	{
+		FirstBakeTriggerTimeBelowSettleSpeedSec = 0.f;
+		return;
+	}
+	FirstBakeTriggerTimeBelowSettleSpeedSec += IH_WB_IslandActorPrivate::PGCProximityRefreshIntervalSec;
+	if (FirstBakeTriggerTimeBelowSettleSpeedSec < IH_WB_IslandActorPrivate::PGCSettleDurationSec)
+	{
+		return;
+	}
+
+	// Proximity: camera within streaming distance of the island's REAL landmass footprint, not just
+	// its actor origin (a large island's origin can be far from where the camera is actually looking).
+	const float DistCm = FVector::Dist(CameraManager->GetCameraLocation(), GetMainLandCentroidWorldCm());
+	if (DistCm > GetMainLandFootprintRadiusCm() + IH_WB_IslandActorPrivate::PGCStreamRadiusCm)
+	{
+		return;
+	}
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("First Bake: auto-triggered by camera settle — island %d."), TankIslandIndex);
+	RunFirstBake();
 }
 
 // 2026-09-20: see PGCTimeIdleForSuspendSec's own header comment - this is what actually stops the
@@ -6355,11 +6424,20 @@ void AIH_WB_IslandActor::RunFirstBake()
 	TArray<UMaterialInterface*> MaterialSet;
 	int32 TrianglesAppended = 0;
 
+	// 2026-09-21 (baked-island material blend): accumulate per-vertex color the SAME way the now-
+	// fixed ApplyDtBiomeColorBands/ApplyDevColorMode do (GetVertexColorValueForRow +
+	// AccumulateVertexColorValue, position-keyed) so BakedIslandMesh gets real vertex-color material
+	// blending instead of the old one-material-slot-per-section hard edge. Reusing this shared
+	// accumulator means a boundary vertex touched by two differently-classified triangles blends
+	// correctly here too, exactly as it now does for the un-baked PMC path.
+	const IHDevViewRuntime::EIHDevColorMode Mode = IHDevViewRuntime::GetDevColorMode();
+	const TArray<const FIHASLSlopeBiomeRow*> Rows =
+		IH_WB_IslandActorPrivate::GetBiomeRowsSortedForClassification(this);
+	TMap<FIntPoint, TPair<FVector4, int32>> ColorAccum;
+
 	const int32 NumSections = IslandMesh->GetNumSections();
 	for (int32 Section = 0; Section < NumSections; ++Section)
 	{
-		MaterialSet.Add(IslandMesh->GetMaterial(Section));
-
 		const FProcMeshSection* ProcSection = IslandMesh->GetProcMeshSection(Section);
 		if (!ProcSection || ProcSection->ProcVertexBuffer.Num() == 0)
 		{
@@ -6367,6 +6445,12 @@ void AIH_WB_IslandActor::RunFirstBake()
 		}
 		const TArray<FProcMeshVertex>& Verts = ProcSection->ProcVertexBuffer;
 		const TArray<uint32>& Idx = ProcSection->ProcIndexBuffer;
+
+		const FIHASLSlopeBiomeRow* Row = (BiomeSectionRowIndices.IsValidIndex(Section)
+			&& Rows.IsValidIndex(BiomeSectionRowIndices[Section]))
+			? Rows[BiomeSectionRowIndices[Section]] : nullptr;
+		const FVector4 ColorValue = Row
+			? IH_WB_IslandActorPrivate::GetVertexColorValueForRow(*Row, Mode) : FVector4(ForceInitToZero);
 
 		// BuildMeshesFromCellGraph gives every section the SAME full whole-island vertex buffer
 		// and varies only each section's own triangle index list ("Shared vert buffers;
@@ -6400,6 +6484,12 @@ void AIH_WB_IslandActor::RunFirstBake()
 			{
 				MaterialIDs->SetValue(NewTriId, Section);
 				++TrianglesAppended;
+				if (Row)
+				{
+					IH_WB_IslandActorPrivate::AccumulateVertexColorValue(ColorAccum, Verts[I0].Position, ColorValue);
+					IH_WB_IslandActorPrivate::AccumulateVertexColorValue(ColorAccum, Verts[I1].Position, ColorValue);
+					IH_WB_IslandActorPrivate::AccumulateVertexColorValue(ColorAccum, Verts[I2].Position, ColorValue);
+				}
 			}
 		}
 	}
@@ -6438,6 +6528,33 @@ void AIH_WB_IslandActor::RunFirstBake()
 	WeldOptions.Tolerance = 0.5f;
 	UGeometryScriptLibrary_MeshRepairFunctions::WeldMeshEdges(DynMesh, WeldOptions);
 
+	// Apply vertex colors HERE - after weld (so lookups use the final, merged vertex set) but
+	// BEFORE smoothing (which moves vertex positions; ColorAccum is keyed by the ORIGINAL 1cm-
+	// quantized classification positions, so sampling it after smoothing could miss and fall back
+	// to black for vertices that drifted more than a cell). Welding only merges coincident-position
+	// duplicates within a 0.5cm tolerance - smaller than the 1cm accumulator grid - so a surviving
+	// vertex's position still lands in the same quantization cell it had pre-weld.
+	{
+		FGeometryScriptColorList ColorList;
+		const int32 VertCount = DynMesh->GetMeshRef().MaxVertexID();
+		ColorList.Reset(VertCount);
+		BakedVertexClassificationPositions.Init(FVector::ZeroVector, VertCount);
+		for (int32 VID = 0; VID < VertCount; ++VID)
+		{
+			if (DynMesh->GetMeshRef().IsVertex(VID))
+			{
+				const FVector VertPos = DynMesh->GetMeshRef().GetVertex(VID);
+				BakedVertexClassificationPositions[VID] = VertPos;
+				ColorList.List->Add(IH_WB_IslandActorPrivate::SampleAccumulatedVertexColorLinear(ColorAccum, VertPos));
+			}
+			else
+			{
+				ColorList.List->Add(FLinearColor::Black);
+			}
+		}
+		UGeometryScriptLibrary_MeshVertexColorFunctions::SetMeshPerVertexColors(DynMesh, ColorList);
+	}
+
 	// Whole-mesh smoothing (empty selection -> FullMeshSelection). 2026-09-19: PIE-confirmed at
 	// both NumIterations=4/Alpha=0.2 AND a much heavier NumIterations=30/Alpha=0.25 that the
 	// visible triangular faceting on this terrain (~1,600 sq m/tri) does NOT go away either way —
@@ -6458,8 +6575,22 @@ void AIH_WB_IslandActor::RunFirstBake()
 	// welded+smoothed geometry rather than carried over stale from the pre-bake mesh.
 	UGeometryScriptLibrary_MeshNormalsFunctions::SetPerVertexNormals(DynMesh);
 
+	// Cache the final (weld+smooth+color+normals) mesh as the "source of truth" for camera-settle
+	// local tessellation to always re-derive a fresh patch from (see FirstBakeSourceMesh's own
+	// comment) - a plain copy, taken now while everything is already in scope, not on first use.
+	FirstBakeSourceMesh = MakeShared<FDynamicMesh3>(DynMesh->GetMeshRef());
+
 	BakedIslandMesh->NotifyMeshUpdated();
-	BakedIslandMesh->ConfigureMaterialSet(MaterialSet);
+	// 2026-09-21: single shared vertex-color-blended material for the whole mesh (matching the now-
+	// fixed un-baked PMC path), replacing the old one-material-slot-per-original-PMC-section
+	// approach. Triangle MaterialIDs still vary 0..NumSections-1 (unchanged above, harmless now that
+	// nothing branches on it) - size MaterialSet to cover the full ID range with every slot pointing
+	// at the SAME shared MID, so every triangle resolves correctly regardless of its own MaterialID.
+	if (UMaterialInstanceDynamic* SharedMid = IH_WB_IslandActorPrivate::CreateSharedIslandModeMaterial(this, Mode))
+	{
+		MaterialSet.Init(SharedMid, FMath::Max(NumSections, 1));
+		BakedIslandMesh->ConfigureMaterialSet(MaterialSet);
+	}
 	BakedIslandMesh->EnableComplexAsSimpleCollision();
 	BakedIslandMesh->SetDeferredCollisionUpdatesEnabled(false, true);
 	BakedIslandMesh->SetCollisionEnabled(ECollisionEnabled::QueryAndPhysics);
@@ -6478,6 +6609,54 @@ void AIH_WB_IslandActor::RunFirstBake()
 	UE_LOG(LogIH_WB_Demo004, Log,
 		TEXT("First Bake: island %d — %d verts / %d tris after weld+smooth."),
 		TankIslandIndex, DynMesh->GetMeshRef().VertexCount(), DynMesh->GetMeshRef().TriangleCount());
+}
+
+void AIH_WB_IslandActor::RunProximityTessellation(const FVector& WorldCenter, float RadiusCm)
+{
+	using namespace UE::Geometry;
+
+	if (!bFirstBaked || !BakedIslandMesh || !FirstBakeSourceMesh.IsValid())
+	{
+		return;
+	}
+
+	// Fresh copy from the cached post-bake source every call — never edits whatever's currently
+	// displayed in place. See FirstBakeSourceMesh's own comment for why: this is what makes repeated
+	// settling over the same spot bounded (re-derives the same clean source instead of compounding)
+	// and "revert when the camera moves away" free (the next call just re-derives at the new spot).
+	FDynamicMesh3 PatchMesh(*FirstBakeSourceMesh);
+
+	BakedIslandMesh->SetDeferredCollisionUpdatesEnabled(true, false);
+	BakedIslandMesh->SetMesh(MoveTemp(PatchMesh));
+	UDynamicMesh* DynMesh = BakedIslandMesh->GetDynamicMesh();
+
+	const FVector LocalCenter = GetActorTransform().InverseTransformPosition(WorldCenter);
+
+	FGeometryScriptMeshSelection Selection;
+	UGeometryScriptLibrary_MeshSelectionFunctions::SelectMeshElementsInSphere(
+		DynMesh, Selection, LocalCenter, RadiusCm, EGeometryScriptMeshSelectionType::Triangles,
+		/*bInvert=*/false, /*MinNumTrianglePoints=*/3);
+
+	FGeometryScriptSelectiveTessellateOptions TessellateOptions;
+	UGeometryScriptLibrary_MeshSubdivideFunctions::ApplySelectiveTessellation(
+		DynMesh, Selection, TessellateOptions, /*TessellationLevel=*/1,
+		ESelectiveTessellatePatternType::ConcentricRings);
+
+	// ApplyPNTessellation is NOT used here - confirmed via its actual signature
+	// (GeometryScript/MeshSubdivideFunctions.h) it takes no selection at all, whole-mesh only, so it
+	// can't be scoped to just this local patch without re-curving the entire island. Recompute normals
+	// on the newly-added triangles instead - real per-pixel curvature would need a selection-aware
+	// alternative, out of scope for this first pass (see plan: "denser first, curvier later" if the
+	// density alone isn't enough once PIE-validated).
+	UGeometryScriptLibrary_MeshNormalsFunctions::SetPerVertexNormals(DynMesh);
+
+	BakedIslandMesh->NotifyMeshUpdated();
+	BakedIslandMesh->EnableComplexAsSimpleCollision();
+	BakedIslandMesh->SetDeferredCollisionUpdatesEnabled(false, true);
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("Proximity tessellation: island %d — %d verts / %d tris after local densify (radius=%.0fcm)."),
+		TankIslandIndex, DynMesh->GetMeshRef().VertexCount(), DynMesh->GetMeshRef().TriangleCount(), RadiusCm);
 }
 
 void AIH_WB_IslandActor::ResetFirstBake()
