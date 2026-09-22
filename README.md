@@ -25,6 +25,13 @@ See `Content/InvisibleHand/IH_WB_Phase_Order_Canon.md` for the accepted phase se
 (RealmSeed → First Bake → Terrain Stamps → Latitude → Hydrology/Final Bake → Sector Fabric)
 and the Nanite/World Partition bake architecture.
 
+## Procedural Placement Architecture
+
+See `Content/InvisibleHand/IH_WB_PCG_Architecture_Canon.md` for the decision to use UE 5.8's native
+PCG framework (not hand-rolled per-triangle/HISM code) as the default for procedural scatter/
+placement going forward, the confirmed native techniques for noise-threshold and organic
+non-overlapping placement, and the Grand Architect (future phase) orchard/pine spec.
+
 ## Safe Junctures
 
 See `Content/InvisibleHand/IH_WB_DevView_BandsBiomePgc_Juncture_2026-09-21.md` for the latest
