@@ -1536,9 +1536,75 @@ void AIH_Cube2FlyPlayerController::FinishHUDSliderPointerUp(const FVector2D& Cur
 	}
 }
 
+// 2026-09-21: the fly camera had no ground-collision check at all - WASD/zoom/pan could freely dip
+// it below terrain (useful occasionally for diagnostic grabs, no longer needed day-to-day per user
+// direction). Reuses UIH_P1C07_IslandCollisionSubsystem::TrySampleIslandSurfaceAtXY - the same
+// registered-island-only vertical ray cast Terrain Stamps use for ground placement - rather than a
+// raw World->LineTrace against ECC_WorldStatic, since the ocean plane is ALSO ECC_WorldStatic and a
+// blanket trace would incorrectly clamp the camera above the water surface everywhere, not just over
+// islands (this only ever constrains it relative to real registered island/stamp collision).
+//
+// Look-ahead (2026-09-21 round 2): also samples ~10m along the camera's actual travel direction
+// (this tick's position delta, not its facing direction - a strafing/panning camera can move
+// somewhere it isn't looking) and clamps against whichever of the two samples demands more height.
+// Without this, a fast-flying camera only reacts once it's ALREADY over rising terrain, which reads
+// as a late, jarring snap; sampling ahead starts the correction a beat earlier.
+void AIH_Cube2FlyPlayerController::ClampFlyCameraAboveTerrain()
+{
+	APawn* ViewPawn = GetPawn();
+	UGameInstance* GI = GetGameInstance();
+	UIH_P1C07_IslandCollisionSubsystem* Collision =
+		GI ? GI->GetSubsystem<UIH_P1C07_IslandCollisionSubsystem>() : nullptr;
+	if (!ViewPawn || !Collision)
+	{
+		return;
+	}
+
+	const FVector CamLoc = ViewPawn->GetActorLocation();
+	constexpr float MinClearanceAboveSurfaceCm = 900.f;
+	constexpr float LookAheadDistCm = 1000.f; // ~10m
+
+	float RequiredMinZ = -MAX_FLT;
+	bool bAnySample = false;
+
+	FVector SurfaceLoc;
+	if (Collision->TrySampleIslandSurfaceAtXY(FVector2D(CamLoc.X, CamLoc.Y), CamLoc.Z, 0.f, nullptr, SurfaceLoc))
+	{
+		RequiredMinZ = SurfaceLoc.Z + MinClearanceAboveSurfaceCm;
+		bAnySample = true;
+	}
+
+	const bool bHasPriorTick = LastCameraTickWorldLoc.X != TNumericLimits<float>::Max();
+	if (bHasPriorTick)
+	{
+		FVector TravelDir = CamLoc - LastCameraTickWorldLoc;
+		TravelDir.Z = 0.f;
+		if (!TravelDir.IsNearlyZero())
+		{
+			TravelDir.Normalize();
+			const FVector AheadXY = CamLoc + TravelDir * LookAheadDistCm;
+			FVector AheadSurfaceLoc;
+			if (Collision->TrySampleIslandSurfaceAtXY(
+				FVector2D(AheadXY.X, AheadXY.Y), CamLoc.Z, 0.f, nullptr, AheadSurfaceLoc))
+			{
+				RequiredMinZ = FMath::Max(RequiredMinZ, AheadSurfaceLoc.Z + MinClearanceAboveSurfaceCm);
+				bAnySample = true;
+			}
+		}
+	}
+	LastCameraTickWorldLoc = CamLoc;
+
+	if (bAnySample && CamLoc.Z < RequiredMinZ)
+	{
+		ViewPawn->SetActorLocation(FVector(CamLoc.X, CamLoc.Y, RequiredMinZ), false);
+	}
+}
+
 void AIH_Cube2FlyPlayerController::PlayerTick(float DeltaTime)
 {
 	Super::PlayerTick(DeltaTime);
+
+	ClampFlyCameraAboveTerrain();
 
 	if (CameraAslWidget)
 	{
@@ -4022,6 +4088,48 @@ void AIH_Cube2FlyPlayerController::RequestRegenerateIslandsFromSeed(TFunction<vo
 {
 	PendingRealmRegenCompleteCallback = MoveTemp(OnComplete);
 	StartRealmRegenWork(true);
+}
+
+void AIH_Cube2FlyPlayerController::TestProximityTessellation(float RadiusCm)
+{
+	UWorld* World = GetWorld();
+	AIH_WB_Demo004GameMode* GM = World ? World->GetAuthGameMode<AIH_WB_Demo004GameMode>() : nullptr;
+	if (!GM)
+	{
+		return;
+	}
+
+	FVector CameraLocation;
+	FRotator CameraRotation;
+	GetPlayerViewPoint(CameraLocation, CameraRotation);
+
+	AIH_WB_IslandActor* NearestBaked = nullptr;
+	float NearestDistCm = TNumericLimits<float>::Max();
+	for (const TObjectPtr<AIH_WB_IslandActor>& Island : GM->GetSpawnedIslands())
+	{
+		if (!Island || !Island->IsFirstBaked())
+		{
+			continue;
+		}
+		const float DistCm = FVector::Dist(CameraLocation, Island->GetMainLandCentroidWorldCm());
+		if (DistCm < NearestDistCm)
+		{
+			NearestDistCm = DistCm;
+			NearestBaked = Island;
+		}
+	}
+
+	if (!NearestBaked)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("TestProximityTessellation: no First-Baked island found — bake one first (Shift+drag/rotate an island, Enter) or wait for camera-settle auto-bake."));
+		return;
+	}
+
+	UE_LOG(LogIH_WB_Demo004, Log,
+		TEXT("TestProximityTessellation: running on nearest baked island (dist=%.0fcm) at camera location, radius=%.0fcm."),
+		NearestDistCm, RadiusCm);
+	NearestBaked->RunProximityTessellation(CameraLocation, RadiusCm);
 }
 
 void AIH_Cube2FlyPlayerController::RequestFocusIsland(int32 IslandIndex)

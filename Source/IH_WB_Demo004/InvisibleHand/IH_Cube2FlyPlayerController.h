@@ -40,6 +40,24 @@ class IH_WB_DEMO004_API AIH_Cube2FlyPlayerController : public APlayerController
 	GENERATED_BODY()
 
 public:
+	/** 2026-09-21: manual, console-only trigger for the camera-settle proximity tessellation
+	 * feature (RunProximityTessellation) — deliberately NOT wired into any automatic tick yet.
+	 * Type "TestProximityTessellation" (optionally "TestProximityTessellation 5000" for a 50m
+	 * radius, default 3000/30m) in the in-game console (~) while looking at an already-baked
+	 * island, to directly validate ApplySelectiveTessellation's ConcentricRings pattern produces no
+	 * visible cracks at the patch boundary before this gets wired into the real settle-gated tick. */
+	UFUNCTION(Exec)
+	void TestProximityTessellation(float RadiusCm = 3000.f);
+	/** 2026-09-21: keeps the fly camera from dipping below registered island/stamp terrain — called
+	 * every PlayerTick. See its own .cpp comment for why it's scoped to island collision specifically
+	 * rather than a blanket ECC_WorldStatic trace (the ocean plane shares that channel), and for the
+	 * ~10m look-ahead sample along actual travel direction. */
+	void ClampFlyCameraAboveTerrain();
+	/** Camera world position at the PREVIOUS tick — lets ClampFlyCameraAboveTerrain derive actual
+	 * travel direction for its look-ahead sample. Sentinel (TNumericLimits<float>::Max()) means "no
+	 * prior tick yet", matching the pattern already used for the same purpose on AIH_WB_IslandActor. */
+	FVector LastCameraTickWorldLoc = FVector(TNumericLimits<float>::Max());
+
 	void RequestFocusIsland(int32 IslandIndex);
 	/** Pure X/Y recenter over the target island - preserves current camera angle and zoom/altitude. */
 	void BeginCameraFlyToIsland(int32 IslandIndex);
