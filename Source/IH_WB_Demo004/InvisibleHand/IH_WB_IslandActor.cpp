@@ -6750,6 +6750,7 @@ void AIH_WB_IslandActor::RunProximityTessellation(const FVector& WorldCenter, fl
 	UDynamicMesh* DynMesh = BakedIslandMesh->GetDynamicMesh();
 
 	const FVector LocalCenter = GetActorTransform().InverseTransformPosition(WorldCenter);
+	const int32 PreTessellationTriCount = DynMesh->GetMeshRef().TriangleCount();
 
 	FGeometryScriptMeshSelection Selection;
 	UGeometryScriptLibrary_MeshSelectionFunctions::SelectMeshElementsInSphere(
@@ -6760,6 +6761,32 @@ void AIH_WB_IslandActor::RunProximityTessellation(const FVector& WorldCenter, fl
 	UGeometryScriptLibrary_MeshSubdivideFunctions::ApplySelectiveTessellation(
 		DynMesh, Selection, TessellateOptions, /*TessellationLevel=*/1,
 		ESelectiveTessellatePatternType::ConcentricRings);
+
+	// 2026-09-23: SAFETY CAP, confirmed necessary via real PIE data, not theoretical - a single
+	// ~30m-radius selection on this terrain (avg ~1,600 sq m/triangle, so a selection this size
+	// typically only catches 1-3 huge source triangles) drove island 0 from 327,068 to 1,962,408
+	// triangles in ONE call — ConcentricRings' actual density scaling at TessellationLevel=1 is far
+	// more aggressive than assumed when this feature was first validated (that pass only checked for
+	// visible cracks, never triangle count). A ~2M-triangle collision recook is the real cause of the
+	// "abrupt lag on stop" reported in PIE. FGeometryScriptSelectiveTessellateOptions has no density/
+	// edge-length control to dial this down directly (confirmed via its own header - only
+	// bEnableMultithreading and EmptyBehavior), so cap the OUTCOME instead: if this call would add
+	// more than a bounded triangle budget, discard the over-tessellated result and fall back to the
+	// plain (un-densified) fresh copy already sitting on BakedIslandMesh, rather than accept an
+	// unbounded mesh. Local density becomes a "when it's cheap enough" bonus, not a guarantee -
+	// correct given the alternative is a real, measured gameplay hitch every time the camera settles.
+	constexpr int32 MaxAddedTrianglesPerTessellation = 20000;
+	const int32 PostTessellationTriCount = DynMesh->GetMeshRef().TriangleCount();
+	if (PostTessellationTriCount - PreTessellationTriCount > MaxAddedTrianglesPerTessellation)
+	{
+		UE_LOG(LogIH_WB_Demo004, Warning,
+			TEXT("Proximity tessellation: island %d — discarding over-budget result (%d -> %d tris, "
+				 "+%d exceeds the %d-triangle cap) — falling back to the un-densified patch."),
+			TankIslandIndex, PreTessellationTriCount, PostTessellationTriCount,
+			PostTessellationTriCount - PreTessellationTriCount, MaxAddedTrianglesPerTessellation);
+		BakedIslandMesh->SetMesh(FDynamicMesh3(*FirstBakeSourceMesh));
+		DynMesh = BakedIslandMesh->GetDynamicMesh();
+	}
 
 	// ApplyPNTessellation is NOT used here - confirmed via its actual signature
 	// (GeometryScript/MeshSubdivideFunctions.h) it takes no selection at all, whole-mesh only, so it
